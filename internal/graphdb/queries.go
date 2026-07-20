@@ -419,3 +419,84 @@ func (c *Conn) QueryRaw(ctx context.Context, cypher string) ([]map[string]interf
 
 	return results, rows.Err()
 }
+
+// NodePath representa un nodo simple con su path
+type NodePath struct {
+	Path string `json:"path"`
+	Type string `json:"type"`
+}
+
+// QueryNodesSample retorna una muestra al azar de N nodos
+func (c *Conn) QueryNodesSample(ctx context.Context, sampleSize int) ([]NodePath, error) {
+	query := fmt.Sprintf(`
+	SELECT * FROM cypher('vault', $$
+	  MATCH (n)
+	  RETURN n.path AS path, labels(n)[0] AS node_type
+	  ORDER BY RAND()
+	  LIMIT %d
+	$$) AS (path agtype, node_type agtype);
+	`, sampleSize)
+
+	rows, err := c.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query sample nodes failed: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []NodePath
+	for rows.Next() {
+		var path, nodeType string
+		if err := rows.Scan(&path, &nodeType); err != nil {
+			return nil, fmt.Errorf("scan sample node failed: %w", err)
+		}
+
+		p := trimJSON(path)
+		nt := trimJSON(nodeType)
+
+		if p != "" {
+			nodes = append(nodes, NodePath{
+				Path: p,
+				Type: nt,
+			})
+		}
+	}
+
+	return nodes, rows.Err()
+}
+
+// QueryNodesByType retorna todos los nodos de un tipo específico
+func (c *Conn) QueryNodesByType(ctx context.Context, nodeType string) ([]NodePath, error) {
+	query := fmt.Sprintf(`
+	SELECT * FROM cypher('vault', $$
+	  MATCH (n:%s)
+	  RETURN n.path AS path, labels(n)[0] AS node_type
+	  ORDER BY path
+	$$) AS (path agtype, node_type agtype);
+	`, nodeType)
+
+	rows, err := c.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query nodes by type failed: %w", err)
+	}
+	defer rows.Close()
+
+	var nodes []NodePath
+	for rows.Next() {
+		var path, nt string
+		if err := rows.Scan(&path, &nt); err != nil {
+			return nil, fmt.Errorf("scan node by type failed: %w", err)
+		}
+
+		p := trimJSON(path)
+		ntype := trimJSON(nt)
+
+		if p != "" {
+			nodes = append(nodes, NodePath{
+				Path: p,
+				Type: ntype,
+			})
+		}
+	}
+
+	return nodes, rows.Err()
+}

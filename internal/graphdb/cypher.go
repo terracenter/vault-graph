@@ -51,6 +51,20 @@ func (c *Conn) MergeEdge(ctx context.Context, tx pgx.Tx, edge *model.Edge) error
 	return err
 }
 
+// UpdateNodeSummary actualiza la propiedad resumen_llm de un nodo
+func (c *Conn) UpdateNodeSummary(ctx context.Context, path, summary string) error {
+	cypher := fmt.Sprintf(`
+	  MATCH (n {path: '%s'})
+	  SET n.resumen_llm = '%s'
+	  RETURN n
+	`, escapeString(path), escapeString(summary))
+
+	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$%s$$) AS (n agtype);`, cypher)
+
+	_, err := c.pool.Exec(ctx, query)
+	return err
+}
+
 // BeginTx comienza una transacción
 func (c *Conn) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return c.pool.Begin(ctx)
