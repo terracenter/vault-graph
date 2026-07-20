@@ -358,3 +358,33 @@ func (c *Conn) QueryShortestPath(ctx context.Context, from, to string) (Shortest
 
 	return result, rows.Err()
 }
+
+// QueryRaw ejecuta una query Cypher raw y retorna los resultados como mapas genéricos
+func (c *Conn) QueryRaw(ctx context.Context, cypher string) ([]map[string]interface{}, error) {
+	// Envolver el Cypher en la función cypher() de AGE
+	query := fmt.Sprintf(`
+	SELECT * FROM cypher('vault', $$
+	  %s
+	$$) AS (result agtype);
+	`, cypher)
+
+	rows, err := c.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("raw query failed: %w", err)
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		var result string
+		if err := rows.Scan(&result); err != nil {
+			return nil, fmt.Errorf("scan raw result failed: %w", err)
+		}
+
+		// Retornar el resultado como string (AGE devuelve agtype)
+		m := map[string]interface{}{"value": result}
+		results = append(results, m)
+	}
+
+	return results, rows.Err()
+}
