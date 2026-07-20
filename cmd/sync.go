@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/internal/graphdb"
+	"github.com/freddytaborda/vault-graph/config"
 )
 
 var (
@@ -21,7 +22,7 @@ var syncCmd = &cobra.Command{
 	Short: "Carga o sincroniza el vault en el grafo AGE",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Cargar config
-		cfg, err := loadConfig()
+		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
@@ -107,33 +108,4 @@ func collectMarkdownFiles(vaultPath string) ([]string, error) {
 func init() {
 	syncCmd.Flags().BoolVar(&full, "full", true, "sincronizar desde cero (default)")
 	syncCmd.Flags().BoolVar(&sinceMtime, "since-mtime", false, "sincronizar solo archivos modificados")
-}
-
-// loadConfig carga la configuración
-func loadConfig() (*Config, error) {
-	// Aquí simplificaré la config por ahora
-	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		return nil, fmt.Errorf("DATABASE_URL not set")
-	}
-
-	vaultPath := os.Getenv("VAULT_PATH")
-	if vaultPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
-		}
-		vaultPath = filepath.Join(home, "Workspace/Obsidian")
-	}
-
-	return &Config{
-		DatabaseURL: databaseURL,
-		VaultPath:   vaultPath,
-	}, nil
-}
-
-type Config struct {
-	DatabaseURL string
-	OllamaURL   string
-	VaultPath   string
 }

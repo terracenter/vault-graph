@@ -2,49 +2,49 @@ package graphdb
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/freddytaborda/vault-graph/internal/model"
 )
 
+// escapeString escapa comillas en strings para Cypher
+func escapeString(s string) string {
+	return strings.ReplaceAll(s, "'", "\\'")
+}
+
 // MergeNode inserta o actualiza un nodo via MERGE
 func (c *Conn) MergeNode(ctx context.Context, tx pgx.Tx, node *model.Node) error {
-	query := `
-	SELECT * FROM cypher('vault', $$
-	  MERGE (n:` + string(node.Type) + ` {path: $path})
-	  SET n.titulo = $titulo, n.carpeta = $carpeta, n.mtime = $mtime, n.tipo = $tipo
+	// Construir Cypher con valores literales (escapados)
+	cypher := fmt.Sprintf(`
+	  MERGE (n:%s {path: '%s'})
+	  SET n.titulo = '%s', n.carpeta = '%s', n.mtime = %d, n.tipo = '%s'
 	  RETURN n
-	$$, $1) AS (n agtype);
-	`
+	`, string(node.Type), escapeString(node.Path), escapeString(node.Titulo),
+		escapeString(node.Carpeta), node.MTime.Unix(), string(node.Type))
 
-	_, err := tx.Exec(ctx, query,
-		node.Path,
-		node.Titulo,
-		node.Carpeta,
-		node.MTime.Unix(),
-		string(node.Type),
-	)
+	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$%s$$) AS (n agtype);`, cypher)
+
+	_, err := tx.Exec(ctx, query)
 	return err
 }
 
 // MergeEdge inserta o actualiza una arista via MERGE
 func (c *Conn) MergeEdge(ctx context.Context, tx pgx.Tx, edge *model.Edge) error {
-	// Cypher query parametrizado: MERGE ambos extremos + la relación
-	query := `
-	SELECT * FROM cypher('vault', $$
-	  MERGE (a {path: $from})
-	  MERGE (b {path: $to})
-	  MERGE (a)-[r:` + edge.Type + `]->(b)
-	  SET r.resuelto = $resuelto
+	// Construir Cypher con valores literales (escapados)
+	cypher := fmt.Sprintf(`
+	  MERGE (a {path: '%s'})
+	  MERGE (b {path: '%s'})
+	  MERGE (a)-[r:%s]->(b)
+	  SET r.resuelto = %v
 	  RETURN r
-	$$, $1) AS (r agtype);
-	`
+	`, escapeString(edge.FromPath), escapeString(edge.ToPath), edge.Type,
+		edge.Resuelto)
 
-	_, err := tx.Exec(ctx, query,
-		edge.FromPath,
-		edge.ToPath,
-		edge.Resuelto,
-	)
+	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$%s$$) AS (r agtype);`, cypher)
+
+	_, err := tx.Exec(ctx, query)
 	return err
 }
 
