@@ -1,0 +1,11 @@
+[Unit]
+Description=Vault Graph — sync incremental del grafo AGE
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=freddy
+WorkingDirectory=/home/freddy/Workspace/Desarrollo/vault-graph
+EnvironmentFile=-/home/freddy/Workspace/Desarrollo/vault-graph/.env
+ExecStart=/home/freddy/Workspace/Desarrollo/vault-graph/deploy/systemd/vault-graph-sync.sh
