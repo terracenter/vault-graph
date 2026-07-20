@@ -9,9 +9,12 @@ import (
 	"github.com/freddytaborda/vault-graph/internal/model"
 )
 
-// escapeString escapa comillas en strings para Cypher
+// escapeString escapa caracteres especiales en strings para Cypher
 func escapeString(s string) string {
-	return strings.ReplaceAll(s, "'", "\\'")
+	// Escapar backslashes primero, luego comillas
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return s
 }
 
 // MergeNode inserta o actualiza un nodo via MERGE

@@ -200,13 +200,22 @@ func (l *Loader) parseEdges(path string, content string) []model.Edge {
 		resolved, ok := l.resolver.Resolve(link.Target)
 		if !ok {
 			l.stats.UnresolvedWikilinks++
+			// Crear arista con ToPath = target original (para que quede registrado como roto)
+			edges = append(edges, model.Edge{
+				FromPath: path,
+				ToPath:   link.Target, // guardar el target original para auditoría
+				Type:     "ENLAZA",
+				Resuelto: false,
+			})
+		} else {
+			// Arista exitosa
+			edges = append(edges, model.Edge{
+				FromPath: path,
+				ToPath:   resolved,
+				Type:     "ENLAZA",
+				Resuelto: true,
+			})
 		}
-		edges = append(edges, model.Edge{
-			FromPath: path,
-			ToPath:   resolved,
-			Type:     "ENLAZA",
-			Resuelto: ok,
-		})
 	}
 
 	// Tags → :Tag nodes
