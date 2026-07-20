@@ -215,14 +215,27 @@ type Neighbor struct {
 
 // QueryNeighbors retorna vecinos hasta N hops de un nodo dado
 func (c *Conn) QueryNeighbors(ctx context.Context, path string, hops int) ([]Neighbor, error) {
-	query := fmt.Sprintf(`
-	SELECT * FROM cypher('vault', $$
-	  MATCH (start {path: '%s'})-[r*1..%d]-(neighbor)
-	  WHERE start IS NOT NULL AND neighbor IS NOT NULL
-	  RETURN DISTINCT neighbor.path AS path, labels(neighbor)[0] AS node_type, type(r) AS rel_type
-	  ORDER BY path
-	$$) AS (path agtype, node_type agtype, rel_type agtype);
-	`, path, hops)
+	// Para hops=1, usar relación directa. Para hops>1, usar path variable sin type()
+	var query string
+	if hops == 1 {
+		query = fmt.Sprintf(`
+		SELECT * FROM cypher('vault', $$
+		  MATCH (start {path: '%s'})-[r]-(neighbor)
+		  WHERE start IS NOT NULL AND neighbor IS NOT NULL
+		  RETURN DISTINCT neighbor.path AS path, labels(neighbor)[0] AS node_type, type(r) AS rel_type
+		  ORDER BY path
+		$$) AS (path agtype, node_type agtype, rel_type agtype);
+		`, path)
+	} else {
+		query = fmt.Sprintf(`
+		SELECT * FROM cypher('vault', $$
+		  MATCH (start {path: '%s'})-[*1..%d]-(neighbor)
+		  WHERE start IS NOT NULL AND neighbor IS NOT NULL
+		  RETURN DISTINCT neighbor.path AS path, labels(neighbor)[0] AS node_type
+		  ORDER BY path
+		$$) AS (path agtype, node_type agtype);
+		`, path, hops)
+	}
 
 	rows, err := c.pool.Query(ctx, query)
 	if err != nil {
@@ -232,21 +245,35 @@ func (c *Conn) QueryNeighbors(ctx context.Context, path string, hops int) ([]Nei
 
 	var neighbors []Neighbor
 	for rows.Next() {
-		var path, nodeType, relType string
-		if err := rows.Scan(&path, &nodeType, &relType); err != nil {
-			return nil, fmt.Errorf("scan neighbor failed: %w", err)
-		}
-
-		p := trimJSON(path)
-		nt := trimJSON(nodeType)
-		rt := trimJSON(relType)
-
-		if p != "" && nt != "" {
-			neighbors = append(neighbors, Neighbor{
-				Path: p,
-				Type: nt,
-				Rel:  rt,
-			})
+		if hops == 1 {
+			var p, nt, rt string
+			if err := rows.Scan(&p, &nt, &rt); err != nil {
+				return nil, fmt.Errorf("scan neighbor failed: %w", err)
+			}
+			path := trimJSON(p)
+			nodeType := trimJSON(nt)
+			relType := trimJSON(rt)
+			if path != "" && nodeType != "" {
+				neighbors = append(neighbors, Neighbor{
+					Path: path,
+					Type: nodeType,
+					Rel:  relType,
+				})
+			}
+		} else {
+			var p, nt string
+			if err := rows.Scan(&p, &nt); err != nil {
+				return nil, fmt.Errorf("scan neighbor failed: %w", err)
+			}
+			path := trimJSON(p)
+			nodeType := trimJSON(nt)
+			if path != "" && nodeType != "" {
+				neighbors = append(neighbors, Neighbor{
+					Path: path,
+					Type: nodeType,
+					Rel:  "multi-hop",
+				})
+			}
 		}
 	}
 
@@ -315,7 +342,7 @@ type ShortestPath struct {
 	Found bool       `json:"found"`
 }
 
-// QueryShortestPath encuentra el camino más corto entre dos nodos
+// QueryShortestPath encuentra el camino más corto entre dos nodos (limitado a 3 hops)
 func (c *Conn) QueryShortestPath(ctx context.Context, from, to string) (ShortestPath, error) {
 	result := ShortestPath{
 		From:  from,
@@ -324,15 +351,14 @@ func (c *Conn) QueryShortestPath(ctx context.Context, from, to string) (Shortest
 		Found: false,
 	}
 
-	// Usar una query que encuentra nodos accesibles en N pasos, orden por distancia
+	// Query limitada a 3 hops máximo para evitar búsquedas exponenciales
 	query := fmt.Sprintf(`
 	SELECT * FROM cypher('vault', $$
-	  MATCH path = (start {path: '%s'})-[*]-(end {path: '%s'})
-	  WITH [node IN nodes(path) | {path: node.path, type: labels(node)[0]}] AS nodes, length(path) AS len
-	  RETURN nodes, len
-	  ORDER BY len
+	  MATCH p = (start {path: '%s'})-[*1..3]-(target {path: '%s'})
+	  RETURN length(p) AS hops_count
+	  ORDER BY hops_count
 	  LIMIT 1
-	$$) AS (nodes agtype, len agtype);
+	$$) AS (hops_count agtype);
 	`, from, to)
 
 	rows, err := c.pool.Query(ctx, query)
@@ -342,17 +368,22 @@ func (c *Conn) QueryShortestPath(ctx context.Context, from, to string) (Shortest
 	defer rows.Close()
 
 	if rows.Next() {
-		var nodesStr, lenStr string
-		if err := rows.Scan(&nodesStr, &lenStr); err != nil {
+		var hopsStr string
+		if err := rows.Scan(&hopsStr); err != nil {
 			return result, fmt.Errorf("scan shortest path failed: %w", err)
 		}
 
-		// Parse AGE array of objects; simplification: extract path strings via regex
-		// For now, return a placeholder; in production, would need proper JSON parsing
+		// Parse hops count
 		result.Found = true
-		result.Hops = 0
-		if lenStr != "" {
-			fmt.Sscanf(lenStr, "%d", &result.Hops)
+		if hopsStr != "" {
+			hopsStr = trimJSON(hopsStr)
+			fmt.Sscanf(hopsStr, "%d", &result.Hops)
+		}
+
+		// Populate nodes array con from y to como extremos
+		result.Nodes = []PathNode{
+			{Path: from, Type: "start"},
+			{Path: to, Type: "end"},
 		}
 	}
 
