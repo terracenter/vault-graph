@@ -41,14 +41,15 @@ type EnrichResult struct {
 }
 
 // NewClient crea un nuevo cliente Ollama
+// Nota: timeout de 30s es necesario para modelos 7B en hardware modesto (minipc)
 func NewClient(baseURL, model string, maxWorkers int) *Client {
 	return &Client{
 		baseURL:      baseURL,
 		model:        model,
 		maxWorkers:   maxWorkers,
-		requestTimeout: 10 * time.Second,
+		requestTimeout: 30 * time.Second,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}
 }
