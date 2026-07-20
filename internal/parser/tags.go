@@ -2,7 +2,6 @@ package parser
 
 import (
 	"regexp"
-	"strings"
 )
 
 var inlineTagRegex = regexp.MustCompile(`#([a-zA-Z0-9_-]+)`)
@@ -32,19 +31,16 @@ func ExtractTags(fm map[string]any, body string) []string {
 	return result
 }
 
-// extractInlineTags extrae tags inline (#tag) excluyendo bloques de código
+// extractInlineTags extrae tags inline (#tag) excluyendo bloques de código y code spans
 func extractInlineTags(body string) []string {
-	// Splits por bloques ``` ... ```
-	parts := strings.Split(body, "```")
-	var tags []string
+	// Remover bloques de código (fences y inline) antes de buscar tags
+	stripped := StripCode(body)
 
-	// Procesar solo las partes no-código (índices pares)
-	for i := 0; i < len(parts); i += 2 {
-		matches := inlineTagRegex.FindAllStringSubmatch(parts[i], -1)
-		for _, match := range matches {
-			// match[1] = el tag sin #
-			tags = append(tags, match[1])
-		}
+	var tags []string
+	matches := inlineTagRegex.FindAllStringSubmatch(stripped, -1)
+	for _, match := range matches {
+		// match[1] = el tag sin #
+		tags = append(tags, match[1])
 	}
 
 	return tags

@@ -68,15 +68,15 @@ type OrphanNode struct {
 	Type   string `json:"type"`
 }
 
-// QueryOrphanNodes retorna nodos sin ENLAZA entrante ni saliente
+// QueryOrphanNodes retorna nodos sin ninguna arista entrante ni saliente (cualquier tipo)
 func (c *Conn) QueryOrphanNodes(ctx context.Context) ([]OrphanNode, error) {
 	query := `
 	SELECT * FROM cypher('vault', $$
 	  MATCH (n)
 	  WHERE NOT EXISTS {
-	    MATCH (n)-[:ENLAZA]-()
+	    MATCH (n)-[]-()
 	  } AND NOT EXISTS {
-	    MATCH ()-[:ENLAZA]->(n)
+	    MATCH ()-[]-(n)
 	  }
 	  RETURN n.path AS path, n.titulo AS titulo, labels(n)[0] AS node_type
 	  ORDER BY path

@@ -14,8 +14,12 @@ var wikiLinkRegex = regexp.MustCompile(`\[\[([^\]|]+)(?:\|([^\]]+))?\]\]`)
 
 // ExtractWikilinks extrae todos los wikilinks [[...]] de un texto
 // Retorna una lista de RawLink con target y alias opcional
+// Excluye wikilinks dentro de bloques de código (fences y inline)
 func ExtractWikilinks(body string) []RawLink {
-	matches := wikiLinkRegex.FindAllStringSubmatch(body, -1)
+	// Remover bloques de código antes de buscar wikilinks
+	stripped := StripCode(body)
+
+	matches := wikiLinkRegex.FindAllStringSubmatch(stripped, -1)
 	links := make([]RawLink, 0)
 
 	for _, match := range matches {
