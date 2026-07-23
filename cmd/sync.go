@@ -13,12 +13,13 @@ import (
 )
 
 var (
-	full      bool
+	full       bool
 	sinceMtime bool
+	prune      bool
 )
 
 var syncCmd = &cobra.Command{
-	Use:   "sync [--full|--since-mtime]",
+	Use:   "sync [--full|--since-mtime] [--prune]",
 	Short: "Carga o sincroniza el vault en el grafo AGE",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Cargar config
@@ -48,6 +49,15 @@ var syncCmd = &cobra.Command{
 		stats, err := loader.LoadFull(ctx, allPaths)
 		if err != nil {
 			return fmt.Errorf("failed to load vault: %w", err)
+		}
+
+		// Prune opcional: borrar nodos cuyos paths ya no existen en el vault
+		if prune {
+			pruned, err := conn.PruneOrphanNodes(ctx, allPaths)
+			if err != nil {
+				return fmt.Errorf("failed to prune orphan nodes: %w", err)
+			}
+			fmt.Printf("Pruned orphan nodes: %d\n", pruned)
 		}
 
 		// Imprimir resumen
@@ -108,4 +118,5 @@ func collectMarkdownFiles(vaultPath string) ([]string, error) {
 func init() {
 	syncCmd.Flags().BoolVar(&full, "full", true, "sincronizar desde cero (default)")
 	syncCmd.Flags().BoolVar(&sinceMtime, "since-mtime", false, "sincronizar solo archivos modificados")
+	syncCmd.Flags().BoolVar(&prune, "prune", false, "eliminar nodos cuyos paths ya no existen en el vault (purga huérfanos)")
 }
