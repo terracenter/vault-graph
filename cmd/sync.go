@@ -21,6 +21,16 @@ var (
 var syncCmd = &cobra.Command{
 	Use:   "sync [--full|--since-mtime] [--prune]",
 	Short: "Carga o sincroniza el vault en el grafo AGE",
+	Long: `Carga el vault en el grafo AGE.
+
+Por defecto, usa --full (re-sincroniza todos los archivos).
+
+Flags:
+  --full         Sincroniza todos los archivos (default: true)
+  --since-mtime  Solo sincroniza archivos modificados
+  --prune        Borra del grafo los nodos cuyos paths ya no existen en el
+                 vault (purga huérfanos). Útil para eliminar referencias a
+                 archivos que fueron movidos o borrados del vault.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Cargar config
 		cfg, err := config.Load()
