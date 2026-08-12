@@ -220,6 +220,22 @@ func extractWikilinks(path string) ([]string, error) {
 	return links, nil
 }
 
+// resolveWikilink resuelve un wikilink a un path RELATIVO dentro del vault.
+//
+// Política estricta (post-2026-08-12, Kuzu-only):
+//   - El destino DEBE ser un archivo con extensión .md.
+//   - Se prueban 3 candidatos: `<link>.md`, `<dir(from)>/<link>.md`,
+//     `<dir(from)>/<link>/index.md`.
+//   - El primer candidato que exista en disco Y sea un archivo regular
+//     (no directorio) Y termine en ".md" gana.
+//   - Si ninguno cumple, retorna "" → el wikilink queda roto en el
+//     grafo (link saliente sin destino), igual que un wikilink a un
+//     .md inexistente.
+//
+// IMPORTANTE: NO se resuelven links a archivos no-.md (.html, .drawio,
+// imágenes, etc.) ni a directorios. Eso evita que el sync cree nodos
+// fantasma en el grafo. Si el vault quiere enlazar a recursos no-.md,
+// debe hacerlo con markdown normal, no wikilinks.
 func resolveWikilink(vaultPath, fromPath, link string) string {
 	candidates := []string{
 		link + ".md",
@@ -228,20 +244,17 @@ func resolveWikilink(vaultPath, fromPath, link string) string {
 	}
 	for _, c := range candidates {
 		full := filepath.Join(vaultPath, c)
-		if _, err := os.Stat(full); err == nil {
-			return strings.ReplaceAll(c, "\\", "/")
+		info, err := os.Stat(full)
+		if err != nil {
+			continue
 		}
-	}
-	// Probar también sin extensión (archivos no-.md como .html, .drawio).
-	candidatesNonMd := []string{
-		link,
-		filepath.Join(filepath.Dir(fromPath), link),
-	}
-	for _, c := range candidatesNonMd {
-		full := filepath.Join(vaultPath, c)
-		if _, err := os.Stat(full); err == nil {
-			return strings.ReplaceAll(c, "\\", "/")
+		if info.IsDir() {
+			continue
 		}
+		if !strings.HasSuffix(c, ".md") {
+			continue
+		}
+		return strings.ReplaceAll(c, "\\", "/")
 	}
 	return ""
 }
