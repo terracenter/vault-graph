@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
 	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
@@ -70,70 +68,10 @@ func statsKuzu(kuzuPath string) ([]NodeStat, []ClientServerRelation, error) {
 	return stats, relations, nil
 }
 
-// statsAGE consulta AGE directamente con Cypher (vía pgx, sin el wrapper
-// graphdb para evitar dependencia circular).
-func statsAGE(dbURL string) ([]NodeStat, []ClientServerRelation, error) {
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dbURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("connect AGE: %w", err)
-	}
-	defer conn.Close(ctx)
-
-	if _, err := conn.Exec(ctx, `LOAD 'age'`); err != nil {
-		return nil, nil, fmt.Errorf("LOAD age: %w", err)
-	}
-	if _, err := conn.Exec(ctx, `SET search_path = ag_catalog, public`); err != nil {
-		return nil, nil, fmt.Errorf("SET search_path: %w", err)
-	}
-
-	// Conteo de nodos por label. Usamos el mismo patrón que en graphdb/queries.go.
-	var stats []NodeStat
-	rows, err := conn.Query(ctx, `
-		SELECT * FROM cypher('vault', $$
-		  MATCH (n)
-		  RETURN labels(n)[0] AS l
-		$$) AS (l agtype)
-	`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("query labels: %w", err)
-	}
-	defer rows.Close()
-	dist := map[string]int{}
-	for rows.Next() {
-		var l string
-		if err := rows.Scan(&l); err != nil {
-			return nil, nil, fmt.Errorf("scan: %w", err)
-		}
-		dist[l]++
-	}
-	for t, c := range dist {
-		stats = append(stats, NodeStat{Type: t, Count: c})
-	}
-
-	// Relaciones Cliente-Servidor.
-	var relations []ClientServerRelation
-	rows, err = conn.Query(ctx, `
-		SELECT * FROM cypher('vault', $$
-		  MATCH (c)-[r]->(s)
-		  RETURN c.path, type(r), s.path
-		  LIMIT 5
-		$$) AS (c_path agtype, rel_type agtype, s_path agtype)
-	`)
-	if err != nil {
-		return nil, nil, fmt.Errorf("query relations: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var c, t, s string
-		if err := rows.Scan(&c, &t, &s); err != nil {
-			return nil, nil, fmt.Errorf("scan rel: %w", err)
-		}
-		relations = append(relations, ClientServerRelation{Cliente: c, Type: t, Servidor: s})
-	}
-
-	return stats, relations, nil
-}
+// statsAGE eliminado en cleanup final (commit actual). El CLI es 100% Kuzu.
+//
+// (La función se mantuvo como referencia histórica hasta confirmar que
+// el backend Kuzu cubre todos los casos de uso.)
 
 var statsCmd = &cobra.Command{
 	Use:   "stats",
@@ -144,29 +82,25 @@ var statsCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		// Decidir backend: Kuzu si está configurado, sino AGE.
-		var stats []NodeStat
-		var relations []ClientServerRelation
-		if cfg.KuzuPath != "" {
-			stats, relations, err = statsKuzu(cfg.KuzuPath)
-		} else {
-			stats, relations, err = statsAGE(cfg.DatabaseURL)
+		if cfg.KuzuPath == "" {
+			return fmt.Errorf("stats requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
 		}
+
+		stats, relations, err := statsKuzu(cfg.KuzuPath)
 		if err != nil {
 			return fmt.Errorf("failed to query stats: %w", err)
 		}
 
-		backend := backendName(cfg)
 		if format == "json" {
 			data := map[string]interface{}{
-				"backend":          backend,
-				"node_stats":       stats,
-				"client_server":    relations,
+				"backend":       "kuzu",
+				"node_stats":    stats,
+				"client_server": relations,
 			}
 			b, _ := json.MarshalIndent(data, "", "  ")
 			fmt.Println(string(b))
 		} else {
-			fmt.Printf("=== Node Statistics (%s) ===\n", backend)
+			fmt.Println("=== Node Statistics (kuzu) ===")
 			totalNodes := 0
 			for _, stat := range stats {
 				fmt.Printf("  %-12s: %4d\n", stat.Type, stat.Count)

@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
 	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
@@ -30,44 +28,7 @@ func brokenKuzu(kuzuPath string) ([]BrokenLink, error) {
 	return []BrokenLink{}, nil
 }
 
-// brokenAGE consulta los wikilinks no resueltos.
-func brokenAGE(dbURL string) ([]BrokenLink, error) {
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dbURL)
-	if err != nil {
-		return nil, fmt.Errorf("connect AGE: %w", err)
-	}
-	defer conn.Close(ctx)
-
-	if _, err := conn.Exec(ctx, `LOAD 'age'`); err != nil {
-		return nil, fmt.Errorf("LOAD age: %w", err)
-	}
-	if _, err := conn.Exec(ctx, `SET search_path = ag_catalog, public`); err != nil {
-		return nil, fmt.Errorf("SET search_path: %w", err)
-	}
-
-	rows, err := conn.Query(ctx, `
-		SELECT * FROM cypher('vault', $$
-		  MATCH (a)-[r]->(b)
-		  WHERE b.path IS NULL
-		  RETURN a.path, b.path, type(r)
-		$$) AS (from_path agtype, to_path agtype, rel_type agtype)
-	`)
-	if err != nil {
-		return nil, fmt.Errorf("query AGE: %w", err)
-	}
-	defer rows.Close()
-
-	var results []BrokenLink
-	for rows.Next() {
-		var f, t, ty string
-		if err := rows.Scan(&f, &t, &ty); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
-		}
-		results = append(results, BrokenLink{FromPath: f, ToPath: t, Type: ty})
-	}
-	return results, rows.Err()
-}
+// brokenAGE eliminado en cleanup final. El CLI es 100% Kuzu.
 
 var brokenCmd = &cobra.Command{
 	Use:   "broken",
@@ -78,26 +39,24 @@ var brokenCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		var links []BrokenLink
-		if cfg.KuzuPath != "" {
-			links, err = brokenKuzu(cfg.KuzuPath)
-		} else {
-			links, err = brokenAGE(cfg.DatabaseURL)
+		if cfg.KuzuPath == "" {
+			return fmt.Errorf("broken requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
 		}
+
+		links, err := brokenKuzu(cfg.KuzuPath)
 		if err != nil {
 			return fmt.Errorf("failed to query broken links: %w", err)
 		}
 
-		backend := backendName(cfg)
 		if format == "json" {
 			data := map[string]interface{}{
-				"backend": backend,
+				"backend": "kuzu",
 				"links":   links,
 			}
 			b, _ := json.MarshalIndent(data, "", "  ")
 			fmt.Println(string(b))
 		} else {
-			fmt.Printf("Broken wikilinks (%s): %d\n\n", backend, len(links))
+			fmt.Printf("Broken wikilinks (kuzu): %d\n\n", len(links))
 			for _, link := range links {
 				fmt.Printf("  %s → %s [%s]\n", link.FromPath, link.ToPath, link.Type)
 			}

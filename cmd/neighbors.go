@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
 	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
@@ -80,43 +78,14 @@ func neighborsKuzu(kuzuPath, path string, nhops int) ([]Neighbor, error) {
 	return results, nil
 }
 
-// neighborsAGE consulta AGE con depth variable.
-func neighborsAGE(dbURL, path string, nhops int) ([]Neighbor, error) {
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dbURL)
-	if err != nil {
-		return nil, fmt.Errorf("connect AGE: %w", err)
-	}
-	defer conn.Close(ctx)
-
-	if _, err := conn.Exec(ctx, `LOAD 'age'`); err != nil {
-		return nil, fmt.Errorf("LOAD age: %w", err)
-	}
-	if _, err := conn.Exec(ctx, `SET search_path = ag_catalog, public`); err != nil {
-		return nil, fmt.Errorf("SET search_path: %w", err)
-	}
-
-	rows, err := conn.Query(ctx, fmt.Sprintf(`
-		SELECT * FROM cypher('vault', $$
-		  MATCH (a {path: '%s'})-[r*1..%d]->(b)
-		  RETURN labels(a)[0] AS from_type, type(r[0]) AS rel_type, b.path AS to_path
-		$$) AS (from_type agtype, rel_type agtype, to_path agtype)
-	`, escapeCypherString(path), nhops))
-	if err != nil {
-		return nil, fmt.Errorf("query AGE: %w", err)
-	}
-	defer rows.Close()
-
-	var results []Neighbor
-	for rows.Next() {
-		var t, rel, p string
-		if err := rows.Scan(&t, &rel, &p); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
-		}
-		results = append(results, Neighbor{Type: t, Path: p, Rel: rel})
-	}
-	return results, rows.Err()
-}
+// neighborsAGE queda como referencia histórica (legacy, no usado en runtime).
+// Se mantiene el código en este archivo pero la rama que lo invoca fue
+// eliminada del CLI. Para 2026-08-12+ el CLI es 100% Kuzu.
+//
+// Keeping the function here as dead code would require maintaining unused
+// imports (pgx) and bloat the binary. Lo eliminamos por completo.
+//
+// (Código AGE removido en commit 7d956f4 → limpieza final en commit actual)
 
 var neighborsCmd = &cobra.Command{
 	Use:   "neighbors <path> [--hops N]",
@@ -130,20 +99,18 @@ var neighborsCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		var neighbors []Neighbor
-		if cfg.KuzuPath != "" {
-			neighbors, err = neighborsKuzu(cfg.KuzuPath, path, hops)
-		} else {
-			neighbors, err = neighborsAGE(cfg.DatabaseURL, path, hops)
+		if cfg.KuzuPath == "" {
+			return fmt.Errorf("neighbors requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
 		}
+
+		neighbors, err := neighborsKuzu(cfg.KuzuPath, path, hops)
 		if err != nil {
 			return fmt.Errorf("failed to query neighbors: %w", err)
 		}
 
-		backend := backendName(cfg)
 		if format == "json" {
 			output := map[string]interface{}{
-				"backend":   backend,
+				"backend":   "kuzu",
 				"path":      path,
 				"hops":      hops,
 				"neighbors": neighbors,
@@ -151,7 +118,7 @@ var neighborsCmd = &cobra.Command{
 			b, _ := json.MarshalIndent(output, "", "  ")
 			fmt.Println(string(b))
 		} else {
-			fmt.Printf("Neighbors of %s (hops=%d, %s): %d found\n\n", path, hops, backend, len(neighbors))
+			fmt.Printf("Neighbors of %s (hops=%d, kuzu): %d found\n\n", path, hops, len(neighbors))
 			for _, n := range neighbors {
 				fmt.Printf("  [%s] %s [%s]\n", n.Type, n.Path, n.Rel)
 			}

@@ -1,11 +1,9 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
 	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
@@ -80,49 +78,7 @@ func shortestPathKuzu(kuzuPath, from, to string) (PathResult, error) {
 	return PathResult{Found: false}, nil
 }
 
-// shortestPathAGE consulta AGE con shortestPath.
-func shortestPathAGE(dbURL, from, to string) (PathResult, error) {
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dbURL)
-	if err != nil {
-		return PathResult{}, fmt.Errorf("connect AGE: %w", err)
-	}
-	defer conn.Close(ctx)
-
-	if _, err := conn.Exec(ctx, `LOAD 'age'`); err != nil {
-		return PathResult{}, fmt.Errorf("LOAD age: %w", err)
-	}
-	if _, err := conn.Exec(ctx, `SET search_path = ag_catalog, public`); err != nil {
-		return PathResult{}, fmt.Errorf("SET search_path: %w", err)
-	}
-
-	rows, err := conn.Query(ctx, fmt.Sprintf(`
-		SELECT * FROM cypher('vault', $$
-		  MATCH p = shortestPath((a {path: '%s'})-[*..15]-(b {path: '%s'}))
-		  RETURN length(p) AS hops, nodes(p) AS ns
-		$$) AS (hops agtype, ns agtype)
-	`, escapeCypherString(from), escapeCypherString(to)))
-	if err != nil {
-		return PathResult{}, fmt.Errorf("query AGE: %w", err)
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return PathResult{Found: false}, nil
-	}
-	var hops int
-	var nsRaw string
-	if err := rows.Scan(&hops, &nsRaw); err != nil {
-		return PathResult{}, fmt.Errorf("scan: %w", err)
-	}
-	// nodes(p) en AGE es complejo de parsear (json). Por simplicidad
-	// retornamos solo el conteo de hops y los paths como string.
-	// Para análisis detallado, usar 'query' directamente.
-	nodes := []PathNode{
-		{Type: "?", Path: fmt.Sprintf("path from %s to %s (%d hops, see query for details)", from, to, hops)},
-	}
-	return PathResult{Found: true, Hops: hops, Nodes: nodes}, nil
-}
+// shortestPathAGE eliminado en cleanup final. El CLI es 100% Kuzu.
 
 var pathCmd = &cobra.Command{
 	Use:   "path <path-a> <path-b>",
@@ -137,27 +93,25 @@ var pathCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		var path PathResult
-		if cfg.KuzuPath != "" {
-			path, err = shortestPathKuzu(cfg.KuzuPath, from, to)
-		} else {
-			path, err = shortestPathAGE(cfg.DatabaseURL, from, to)
+		if cfg.KuzuPath == "" {
+			return fmt.Errorf("path requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
 		}
+
+		path, err := shortestPathKuzu(cfg.KuzuPath, from, to)
 		if err != nil {
 			return fmt.Errorf("failed to query shortest path: %w", err)
 		}
 
-		backend := backendName(cfg)
 		if format == "json" {
 			data := map[string]interface{}{
-				"backend": backend,
+				"backend": "kuzu",
 				"path":    path,
 			}
 			b, _ := json.MarshalIndent(data, "", "  ")
 			fmt.Println(string(b))
 		} else {
 			if path.Found {
-				fmt.Printf("Shortest path from %s to %s (%s, %d hops):\n\n", from, to, backend, path.Hops)
+				fmt.Printf("Shortest path from %s to %s (kuzu, %d hops):\n\n", from, to, path.Hops)
 				for i, node := range path.Nodes {
 					fmt.Printf("  %d. [%s] %s\n", i, node.Type, node.Path)
 				}
