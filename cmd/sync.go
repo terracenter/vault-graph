@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/internal/graphdb"
 	"github.com/freddytaborda/vault-graph/config"
+	syncvault "github.com/freddytaborda/vault-graph/internal/syncvault"
 )
 
 var (
@@ -20,8 +21,8 @@ var (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync [--full|--since-mtime] [--prune]",
-	Short: "Carga o sincroniza el vault en el grafo AGE",
-	Long: `Carga el vault en el grafo AGE.
+	Short: "Carga o sincroniza el vault en el grafo",
+	Long: `Carga el vault en el grafo (AGE o Kuzu).
 
 Por defecto, usa --full (re-sincroniza todos los archivos).
 
@@ -30,7 +31,11 @@ Flags:
   --since-mtime  Solo sincroniza archivos modificados
   --prune        Borra del grafo los nodos cuyos paths ya no existen en el
                  vault (purga huérfanos). Útil para eliminar referencias a
-                 archivos que fueron movidos o borrados del vault.`,
+                 archivos que fueron movidos o borrados del vault.
+
+Backend:
+  - Si KUZU_PATH está configurado, escribe a Kuzu (embebido).
+  - Si no, escribe a AGE (PostgreSQL, legacy).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Cargar config
 		cfg, err := config.Load()
@@ -38,7 +43,14 @@ Flags:
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		// Conectar a PostgreSQL
+		// Si KUZU_PATH está configurado, redirigir al sync-kuzu.
+		if cfg.KuzuPath != "" {
+			fmt.Printf("Backend: Kuzu (KUZU_PATH=%s)\n", cfg.KuzuPath)
+			return runSyncKuzu(cfg, prune)
+		}
+
+		// Backend AGE (legacy).
+		fmt.Printf("Backend: AGE (DATABASE_URL)\n")
 		ctx := context.Background()
 		conn, err := graphdb.NewConn(ctx, cfg.DatabaseURL)
 		if err != nil {
@@ -79,6 +91,32 @@ Flags:
 
 		return nil
 	},
+}
+
+// runSyncKuzu ejecuta el sync contra Kuzu usando internal/syncvault.
+// Es un wrapper que invoca la función exportada syncvault.Sync.
+func runSyncKuzu(cfg *config.Config, prune bool) error {
+	stats, err := syncvault.Sync(cfg.VaultPath, cfg.KuzuPath, false)
+	if err != nil {
+		return fmt.Errorf("sync-kuzu: %w", err)
+	}
+	fmt.Printf("Found %d markdown files\n", stats.NodeCount)
+	fmt.Printf("Kuzu:    %d nodos en %s\n", stats.NodeCount, stats.NodeDuration)
+	fmt.Printf("Kuzu:    %d aristas detectadas\n", stats.EdgeCount)
+	fmt.Printf("Kuzu:    %d/%d aristas en %s\n", stats.EdgesWritten, stats.EdgeCount, stats.EdgeDuration)
+	fmt.Printf("\n=== Sync Summary (kuzu) ===\n")
+	fmt.Printf("Nodes written: %d\n", stats.NodeCount)
+	fmt.Printf("Edges detected: %d\n", stats.EdgeCount)
+	fmt.Printf("Edges written: %d\n", stats.EdgesWritten)
+	if prune {
+		// Prune: borrar nodos cuyo path ya no existe en el vault.
+		pruned, err := syncvault.Prune(cfg.KuzuPath, stats.AllPaths)
+		if err != nil {
+			return fmt.Errorf("prune Kuzu: %w", err)
+		}
+		fmt.Printf("Pruned orphan nodes: %d\n", pruned)
+	}
+	return nil
 }
 
 // collectMarkdownFiles recorre el vault y retorna todas las rutas .md
