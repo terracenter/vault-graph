@@ -2,10 +2,15 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
-	syncvault "github.com/freddytaborda/vault-graph/internal/syncvault"
+	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
 )
 
 var (
@@ -30,7 +35,6 @@ Flags:
 
 Requiere KUZU_PATH en el .env o como variable de entorno.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Cargar config
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
@@ -45,34 +49,211 @@ Requiere KUZU_PATH en el .env o como variable de entorno.`,
 	},
 }
 
-// runSyncKuzu ejecuta el sync contra Kuzu usando internal/syncvault.
-// Es un wrapper que invoca la función exportada syncvault.Sync.
-func runSyncKuzu(cfg *config.Config, prune bool) error {
-	stats, err := syncvault.Sync(cfg.VaultPath, cfg.KuzuPath, false)
+func runSyncKuzu(cfg *config.Config, doPrune bool) error {
+	paths, err := collectMarkdownFiles(cfg.VaultPath)
 	if err != nil {
-		return fmt.Errorf("sync-kuzu: %w", err)
+		return fmt.Errorf("collect: %w", err)
 	}
-	fmt.Printf("Found %d markdown files\n", stats.NodeCount)
-	fmt.Printf("Kuzu:    %d nodos en %s\n", stats.NodeCount, stats.NodeDuration)
-	fmt.Printf("Kuzu:    %d aristas detectadas\n", stats.EdgeCount)
-	fmt.Printf("Kuzu:    %d/%d aristas en %s\n", stats.EdgesWritten, stats.EdgeCount, stats.EdgeDuration)
-	fmt.Printf("\n=== Sync Summary (kuzu) ===\n")
-	fmt.Printf("Nodes written: %d\n", stats.NodeCount)
-	fmt.Printf("Edges detected: %d\n", stats.EdgeCount)
-	fmt.Printf("Edges written: %d\n", stats.EdgesWritten)
-	if prune {
-		// Prune: borrar nodos cuyo path ya no existe en el vault.
-		pruned, err := syncvault.Prune(cfg.KuzuPath, stats.AllPaths)
+	fmt.Printf("Found %d markdown files\n", len(paths))
+
+	// Borrar DB previa.
+	if err := os.Remove(cfg.KuzuPath); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("warning: remove %s: %v\n", cfg.KuzuPath, err)
+	}
+	if err := os.Remove(cfg.KuzuPath + ".wal"); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("warning: remove %s.wal: %v\n", cfg.KuzuPath, err)
+	}
+
+	conn, err := kuzu.Open(cfg.KuzuPath)
+	if err != nil {
+		return fmt.Errorf("open Kuzu: %w", err)
+	}
+	defer conn.Close()
+
+	// Crear nodos.
+	startNodes := time.Now()
+	for _, p := range paths {
+		q := fmt.Sprintf("CREATE (n:File {path: '%s'})", escapeCypher(p))
+		if _, err := conn.Execute(q); err != nil {
+			return fmt.Errorf("create node %s: %w", p, err)
+		}
+	}
+	fmt.Printf("Kuzu:    %d nodos en %s\n", len(paths), time.Since(startNodes))
+
+	// Detectar aristas.
+	edgeSet := map[string]struct{}{}
+	for _, from := range paths {
+		wikilinks, err := extractWikilinks(filepath.Join(cfg.VaultPath, from))
 		if err != nil {
-			return fmt.Errorf("prune Kuzu: %w", err)
+			fmt.Printf("warning: extract %s: %v\n", from, err)
+			continue
+		}
+		for _, link := range wikilinks {
+			resolved := resolveWikilink(cfg.VaultPath, from, link)
+			if resolved == "" {
+				continue
+			}
+			edgeSet[fmt.Sprintf("%s\t%s", from, resolved)] = struct{}{}
+		}
+	}
+	fmt.Printf("Kuzu:    %d aristas detectadas\n", len(edgeSet))
+
+	// Set de paths conocidos, para crear destinos no-.md si hace falta.
+	known := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		known[p] = true
+	}
+
+	// Escribir aristas (MERGE para idempotencia; crea destino si falta).
+	startEdges := time.Now()
+	written := 0
+	for edge := range edgeSet {
+		parts := strings.SplitN(edge, "\t", 2)
+		from, to := parts[0], parts[1]
+		if !known[to] {
+			mq := fmt.Sprintf("MERGE (n:File {path: '%s'})", escapeCypher(to))
+			if _, err := conn.Execute(mq); err != nil {
+				return fmt.Errorf("create dest node %s: %w", to, err)
+			}
+			known[to] = true
+		}
+		q := fmt.Sprintf(
+			"MATCH (a:File {path: '%s'}), (b:File {path: '%s'}) MERGE (a)-[:ENLAZA]->(b)",
+			escapeCypher(from), escapeCypher(to))
+		if _, err := conn.Execute(q); err != nil {
+			return fmt.Errorf("create edge %s->%s: %w", from, to, err)
+		}
+		written++
+	}
+	fmt.Printf("Kuzu:    %d/%d aristas en %s\n", written, len(edgeSet), time.Since(startEdges))
+
+	fmt.Printf("\n=== Sync Summary (kuzu) ===\n")
+	fmt.Printf("Nodes written: %d\n", len(paths))
+	fmt.Printf("Edges detected: %d\n", len(edgeSet))
+	fmt.Printf("Edges written: %d\n", written)
+
+	if doPrune {
+		pruned, err := pruneOrphans(conn, paths)
+		if err != nil {
+			return fmt.Errorf("prune: %w", err)
 		}
 		fmt.Printf("Pruned orphan nodes: %d\n", pruned)
 	}
 	return nil
 }
 
+func pruneOrphans(conn *kuzu.Conn, keepPaths []string) (int, error) {
+	keep := make(map[string]bool, len(keepPaths))
+	for _, p := range keepPaths {
+		keep[p] = true
+	}
+
+	var orphans []string
+	err := conn.Query("MATCH (n:File) RETURN n.path AS p",
+		func(row map[string]any) bool {
+			p, _ := row["p"].(string)
+			if !keep[p] {
+				orphans = append(orphans, p)
+			}
+			return true
+		})
+	if err != nil {
+		return 0, fmt.Errorf("list nodes: %w", err)
+	}
+
+	pruned := 0
+	for _, p := range orphans {
+		q := fmt.Sprintf("MATCH (n:File {path: '%s'}) DETACH DELETE n", escapeCypher(p))
+		if _, err := conn.Execute(q); err != nil {
+			return pruned, fmt.Errorf("delete node %s: %w", p, err)
+		}
+		pruned++
+	}
+	return pruned, nil
+}
+
+func collectMarkdownFiles(vaultPath string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(vaultPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if name == ".git" || name == ".obsidian" || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			if strings.HasSuffix(path, "Planes/LLM-Wiki/graphrag") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".md") {
+			return nil
+		}
+		relPath, err := filepath.Rel(vaultPath, path)
+		if err != nil {
+			return err
+		}
+		relPath = strings.ReplaceAll(relPath, "\\", "/")
+		files = append(files, relPath)
+		return nil
+	})
+	return files, err
+}
+
+var wikiLinkRegex = regexp.MustCompile(`\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]`)
+
+func extractWikilinks(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	matches := wikiLinkRegex.FindAllStringSubmatch(string(data), -1)
+	var links []string
+	for _, m := range matches {
+		link := strings.TrimSpace(m[1])
+		if link != "" {
+			links = append(links, link)
+		}
+	}
+	return links, nil
+}
+
+func resolveWikilink(vaultPath, fromPath, link string) string {
+	candidates := []string{
+		link + ".md",
+		filepath.Join(filepath.Dir(fromPath), link) + ".md",
+		filepath.Join(filepath.Dir(fromPath), link, "index.md"),
+	}
+	for _, c := range candidates {
+		full := filepath.Join(vaultPath, c)
+		if _, err := os.Stat(full); err == nil {
+			return strings.ReplaceAll(c, "\\", "/")
+		}
+	}
+	// Probar también sin extensión (archivos no-.md como .html, .drawio).
+	candidatesNonMd := []string{
+		link,
+		filepath.Join(filepath.Dir(fromPath), link),
+	}
+	for _, c := range candidatesNonMd {
+		full := filepath.Join(vaultPath, c)
+		if _, err := os.Stat(full); err == nil {
+			return strings.ReplaceAll(c, "\\", "/")
+		}
+	}
+	return ""
+}
+
+func escapeCypher(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	return s
+}
+
 func init() {
 	syncCmd.Flags().BoolVar(&full, "full", true, "sincronizar desde cero (default)")
-	syncCmd.Flags().BoolVar(&sinceMtime, "sinceMtime", false, "sincronizar solo archivos modificados")
+	syncCmd.Flags().BoolVar(&sinceMtime, "since-mtime", false, "sincronizar solo archivos modificados")
 	syncCmd.Flags().BoolVar(&prune, "prune", false, "eliminar nodos cuyos paths ya no existen en el vault (purga huérfanos)")
 }
