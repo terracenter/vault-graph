@@ -13,6 +13,9 @@ type Config struct {
 	DatabaseURL string
 	OllamaURL   string
 	VaultPath   string
+	// KuzuPath es opcional. Si está set, los comandos que soportan
+	// backend Kuzu lo usan. Si está vacío, usan AGE (default legacy).
+	KuzuPath string
 }
 
 // Load carga la configuración desde .env y variables de entorno
@@ -24,6 +27,7 @@ func Load() (*Config, error) {
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		OllamaURL:   os.Getenv("OLLAMA_URL"),
 		VaultPath:   os.Getenv("VAULT_PATH"),
+		KuzuPath:    os.Getenv("KUZU_PATH"),
 	}
 
 	// Validaciones
