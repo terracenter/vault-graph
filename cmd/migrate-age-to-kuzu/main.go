@@ -30,8 +30,6 @@
 //
 // ESQUEMA EN KUZU:
 //   - Todos los nodos migran con label "File" unificada (no multi-label como AGE).
-//     Las labels originales se pierden en este nivel; la información de tipo queda
-//     disponible via Kuzu Explorer o queries adicionales si se necesita.
 //   - Property "path" se preserva exactamente.
 //   - Aristas migran como ENLAZA (mismo nombre).
 //
@@ -52,6 +50,20 @@ import (
 	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
 )
 
+// MigrationStats contiene los conteos de una migración.
+type MigrationStats struct {
+	AgeTotalNodes     int
+	AgeTotalEdges     int
+	AgeLabeledNodes   int
+	AgeEnlaEdges      int
+	KuzuWrittenNodes  int
+	KuzuFailedNodes   int
+	KuzuWrittenEdges  int
+	KuzuFailedEdges   int
+	KuzuVerifiedNodes int
+	KuzuVerifiedEdges int
+}
+
 func main() {
 	ageDBURL := flag.String("age-dburl", "", "DATABASE_URL de AGE (requerido)")
 	kuzuPath := flag.String("kuzu-path", "", "ruta al archivo Kuzu destino (requerido)")
@@ -69,44 +81,67 @@ func main() {
 	fmt.Printf("Kuzu:   %s\n", *kuzuPath)
 	fmt.Printf("DryRun: %v\n", *dryRun)
 
+	stats, err := migrate(*ageDBURL, *kuzuPath, *limit, *dryRun)
+	if err != nil {
+		log.Fatalf("migrate: %v", err)
+	}
+
+	fmt.Printf("\n=== resumen ===\n")
+	fmt.Printf("AGE  origen: %d nodos con label, %d aristas ENLAZA\n",
+		stats.AgeLabeledNodes, stats.AgeEnlaEdges)
+	fmt.Printf("Kuzu destino: %d nodos, %d aristas\n",
+		stats.KuzuVerifiedNodes, stats.KuzuVerifiedEdges)
+	if stats.KuzuVerifiedNodes == stats.AgeLabeledNodes &&
+		stats.KuzuVerifiedEdges == stats.AgeEnlaEdges {
+		fmt.Printf("✅ migración exitosa\n")
+	} else {
+		fmt.Printf("⚠️  conteos no coinciden — revisar logs\n")
+	}
+}
+
+// migrate ejecuta el flujo completo de migración AGE → Kuzu.
+// Lógica pura separada de main() para permitir testing.
+//
+// Retorna MigrationStats con los conteos. Si dryRun=true, no escribe
+// nada y stats.KuzuWritten* quedan en 0.
+func migrate(ageDBURL, kuzuPath string, limit int, dryRun bool) (MigrationStats, error) {
+	var stats MigrationStats
 	ctx := context.Background()
 
-	// 1. Conectar a AGE y contar
-	age, err := pgx.Connect(ctx, *ageDBURL)
+	// 1. Conectar a AGE.
+	age, err := pgx.Connect(ctx, ageDBURL)
 	if err != nil {
-		log.Fatalf("connect AGE: %v", err)
+		return stats, fmt.Errorf("connect AGE: %w", err)
 	}
 	defer age.Close(ctx)
 
-	// AGE requiere LOAD 'age' + SET search_path antes de cypher().
-	// pgx no soporta meta-commands (LOAD es psql, no SQL estándar),
-	// así que los ejecutamos como Exec separado.
+	// 2. Setup AGE (LOAD + search_path).
 	if _, err := age.Exec(ctx, `LOAD 'age'`); err != nil {
-		log.Fatalf("LOAD age: %v", err)
+		return stats, fmt.Errorf("LOAD age: %w", err)
 	}
 	if _, err := age.Exec(ctx, `SET search_path = ag_catalog, public`); err != nil {
-		log.Fatalf("SET search_path: %v", err)
+		return stats, fmt.Errorf("SET search_path: %w", err)
 	}
 
-	var ageNodeCount, ageEdgeCount int
+	// 3. Conteo total.
 	err = age.QueryRow(ctx, `
 		SELECT
 		  (SELECT count(*) FROM cypher('vault', $$ MATCH (n) RETURN n $$) AS (n agtype)),
 		  (SELECT count(*) FROM cypher('vault', $$ MATCH ()-[r]->() RETURN r $$) AS (r agtype))
-	`).Scan(&ageNodeCount, &ageEdgeCount)
+	`).Scan(&stats.AgeTotalNodes, &stats.AgeTotalEdges)
 	if err != nil {
-		log.Fatalf("count AGE: %v", err)
+		return stats, fmt.Errorf("count AGE: %w", err)
 	}
-	fmt.Printf("AGE:    %d nodos, %d aristas totales\n", ageNodeCount, ageEdgeCount)
+	fmt.Printf("AGE:    %d nodos, %d aristas totales\n", stats.AgeTotalNodes, stats.AgeTotalEdges)
 
-	// 2. Conteo de nodos con label válida
+	// 4. Nodos con label válida.
 	rows, err := age.Query(ctx, `
 		SELECT * FROM cypher('vault', $$
 		  MATCH (n) WHERE labels(n)[0] <> '' RETURN n.path, labels(n)[0] AS l
 		$$) AS (path agtype, l agtype)
 	`)
 	if err != nil {
-		log.Fatalf("query AGE labeled: %v", err)
+		return stats, fmt.Errorf("query AGE labeled: %w", err)
 	}
 	defer rows.Close()
 
@@ -118,19 +153,19 @@ func main() {
 	for rows.Next() {
 		var p, l string
 		if err := rows.Scan(&p, &l); err != nil {
-			log.Fatalf("scan: %v", err)
+			return stats, fmt.Errorf("scan: %w", err)
 		}
 		labeled = append(labeled, labeledNode{path: p, label: l})
 	}
+	stats.AgeLabeledNodes = len(labeled)
 	fmt.Printf("AGE:    %d nodos con label válida\n", len(labeled))
 
-	// Aplicar --limit si se especificó
-	if *limit > 0 && len(labeled) > *limit {
-		labeled = labeled[:*limit]
-		fmt.Printf("AGE:    limitado a %d nodos (modo piloto)\n", *limit)
+	if limit > 0 && len(labeled) > limit {
+		labeled = labeled[:limit]
+		fmt.Printf("AGE:    limitado a %d nodos (modo piloto)\n", limit)
 	}
 
-	// 3. Distribución de labels
+	// 5. Distribución de labels.
 	dist := map[string]int{}
 	for _, n := range labeled {
 		dist[n.label]++
@@ -140,54 +175,48 @@ func main() {
 		fmt.Printf("         %s: %d\n", l, c)
 	}
 
-	// 4. (El conteo y listado de aristas ENLAZA se hace más abajo,
-	//      dentro del bloque de escritura, después de cargar nodos.)
-
-	if *dryRun {
+	// 6. Dry-run: solo contar, no escribir.
+	if dryRun {
 		fmt.Printf("\n=== DRY RUN — no se escribió nada ===\n")
-		fmt.Printf("Para escribir a Kuzu, usar: --dry-run=false\n")
-		return
+		fmt.Printf("Para escribir, usar: --dry-run=false\n")
+		return stats, nil
 	}
 
-	// 5. Conectar a Kuzu y escribir
-	if err := os.Remove(*kuzuPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("warning: remove %s: %v", *kuzuPath, err)
+	// 7. Borrar DB previa.
+	if err := os.Remove(kuzuPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("warning: remove %s: %v", kuzuPath, err)
 	}
-	if err := os.Remove(*kuzuPath + ".wal"); err != nil && !os.IsNotExist(err) {
-		log.Printf("warning: remove %s.wal: %v", *kuzuPath, err)
+	if err := os.Remove(kuzuPath + ".wal"); err != nil && !os.IsNotExist(err) {
+		log.Printf("warning: remove %s.wal: %v", kuzuPath, err)
 	}
 
-	kz, err := kuzu.Open(*kuzuPath)
+	// 8. Abrir Kuzu.
+	kz, err := kuzu.Open(kuzuPath)
 	if err != nil {
-		log.Fatalf("open Kuzu: %v", err)
+		return stats, fmt.Errorf("open Kuzu: %w", err)
 	}
 	defer kz.Close()
+	fmt.Printf("Kuzu:   abierto OK en %s\n", kuzuPath)
 
-	fmt.Printf("Kuzu:   abierto OK en %s\n", *kuzuPath)
-
-	// 6. Migrar nodos
+	// 9. Migrar nodos.
 	fmt.Printf("Kuzu:   migrando %d nodos...\n", len(labeled))
-	nodesOK := 0
-	nodesFail := 0
 	for _, n := range labeled {
-		// RETURN count(*) para reportar filas (contrato Kuzu).
 		q := fmt.Sprintf("CREATE (n:File {path: '%s'}) RETURN count(*)",
 			escapeCypherString(n.path))
 		if _, err := kz.Execute(q); err != nil {
 			log.Printf("error migrando nodo %s: %v", n.path, err)
-			nodesFail++
+			stats.KuzuFailedNodes++
 			continue
 		}
-		nodesOK++
+		stats.KuzuWrittenNodes++
 	}
 	fmt.Printf("Kuzu:   %d/%d nodos migrados (%d fallos)\n",
-		nodesOK, len(labeled), nodesFail)
-	if nodesFail > 0 {
-		log.Printf("WARNING: %d nodos fallaron, continuando", nodesFail)
+		stats.KuzuWrittenNodes, len(labeled), stats.KuzuFailedNodes)
+	if stats.KuzuFailedNodes > 0 {
+		log.Printf("WARNING: %d nodos fallaron, continuando", stats.KuzuFailedNodes)
 	}
 
-	// 7. Leer aristas ENLAZA desde AGE y migrar a Kuzu
-	// Solo aristas cuyos endpoints están en el set de nodos migrados.
+	// 10. Aristas: path set + lectura + escritura.
 	pathSet := make(map[string]bool, len(labeled))
 	for _, n := range labeled {
 		pathSet[n.path] = true
@@ -201,7 +230,7 @@ func main() {
 		$$) AS (from_path agtype, to_path agtype)
 	`)
 	if err != nil {
-		log.Fatalf("query AGE ENLAZA edges: %v", err)
+		return stats, fmt.Errorf("query AGE ENLAZA edges: %w", err)
 	}
 	defer eRows.Close()
 
@@ -210,82 +239,76 @@ func main() {
 	for eRows.Next() {
 		var from, to string
 		if err := eRows.Scan(&from, &to); err != nil {
-			log.Fatalf("scan edge: %v", err)
+			return stats, fmt.Errorf("scan edge: %w", err)
 		}
-		// Solo agregar si ambos endpoints están en el set migrado.
 		if pathSet[from] && pathSet[to] {
 			edges = append(edges, edge{from: from, to: to})
 		}
 	}
+	stats.AgeEnlaEdges = len(edges)
 	fmt.Printf("Kuzu:   %d aristas ENLAZA a migrar (filtradas por nodos existentes)\n",
 		len(edges))
 
-	// 8. Migrar aristas
-	edgesOK := 0
-	edgesFail := 0
+	// 11. Escribir aristas.
+	fmt.Printf("Kuzu:   escribiendo aristas...\n")
 	for _, e := range edges {
-		// MATCH (a),(b) CREATE (a)-[:ENLAZA]->(b) — patrón Cypher estándar.
 		q := fmt.Sprintf(
 			"MATCH (a:File {path: '%s'}), (b:File {path: '%s'}) CREATE (a)-[:ENLAZA]->(b)",
 			escapeCypherString(e.from), escapeCypherString(e.to))
 		if _, err := kz.Execute(q); err != nil {
 			log.Printf("error migrando arista %s -> %s: %v", e.from, e.to, err)
-			edgesFail++
+			stats.KuzuFailedEdges++
 			continue
 		}
-		edgesOK++
+		stats.KuzuWrittenEdges++
 	}
 	fmt.Printf("Kuzu:   %d/%d aristas migradas (%d fallos)\n",
-		edgesOK, len(edges), edgesFail)
+		stats.KuzuWrittenEdges, len(edges), stats.KuzuFailedEdges)
 
-	// 9. Verificación final
+	// 12. Verificación final.
 	fmt.Printf("\n=== verificación final en Kuzu ===\n")
-	kzCount := 0
-	err = kz.Query("MATCH (n:File) RETURN count(*)",
+	stats.KuzuVerifiedNodes, stats.KuzuVerifiedEdges, err = countKuzuAll(kz)
+	if err != nil {
+		return stats, fmt.Errorf("verify final: %w", err)
+	}
+	fmt.Printf("Kuzu:   %d nodos File, %d aristas ENLAZA\n",
+		stats.KuzuVerifiedNodes, stats.KuzuVerifiedEdges)
+
+	return stats, nil
+}
+
+// countKuzuAll retorna (nodos File, aristas ENLAZA, error).
+// Helper para tests y para verificación final de migrate().
+func countKuzuAll(conn *kuzu.Conn) (int, int, error) {
+	var nodes, edges int
+	err := conn.Query("MATCH (n:File) RETURN count(*)",
 		func(row map[string]any) bool {
-			// Kuzu nombra la columna "COUNT_STAR()" para count(*).
 			for _, v := range row {
 				if c, ok := v.(int64); ok {
-					kzCount = int(c)
+					nodes = int(c)
 				}
 			}
 			return true
 		})
 	if err != nil {
-		log.Printf("verify count nodos: %v", err)
-	} else {
-		fmt.Printf("Kuzu:   %d nodos File\n", kzCount)
+		return 0, 0, fmt.Errorf("count nodos: %w", err)
 	}
-
-	kzEdges := 0
-	err = kz.Query("MATCH ()-[r:ENLAZA]->() RETURN count(*)",
+	err = conn.Query("MATCH ()-[r:ENLAZA]->() RETURN count(*)",
 		func(row map[string]any) bool {
 			for _, v := range row {
 				if c, ok := v.(int64); ok {
-					kzEdges = int(c)
+					edges = int(c)
 				}
 			}
 			return true
 		})
 	if err != nil {
-		log.Printf("verify count aristas: %v", err)
-	} else {
-		fmt.Printf("Kuzu:   %d aristas ENLAZA\n", kzEdges)
+		return 0, 0, fmt.Errorf("count aristas: %w", err)
 	}
-
-	fmt.Printf("\n=== resumen ===\n")
-	fmt.Printf("AGE  origen: %d nodos con label, %d aristas ENLAZA\n",
-		len(labeled), len(edges))
-	fmt.Printf("Kuzu destino: %d nodos, %d aristas\n", kzCount, kzEdges)
-	if kzCount == len(labeled) && kzEdges == len(edges) {
-		fmt.Printf("✅ migración exitosa\n")
-	} else {
-		fmt.Printf("⚠️  conteos no coinciden — revisar logs\n")
-	}
+	return nodes, edges, nil
 }
 
 func escapeCypherString(s string) string {
-	// Escape básico — alinea con cypher.go de vault-graph.
 	out := ""
 	for _, c := range s {
 		switch c {
@@ -301,8 +324,6 @@ func escapeCypherString(s string) string {
 }
 
 func maskURL(u string) string {
-	// Oculta password en el log.
-	// Formato: postgresql://user:pass@host:port/db
 	atIdx := -1
 	colonIdx := -1
 	for i := 0; i < len(u); i++ {
