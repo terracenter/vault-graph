@@ -70,9 +70,14 @@ func Open(dbPath string) (*Conn, error) {
 // applySchema crea las tablas mínimas si no existen.
 // Idempotente: si ya existen, retorna un error "already exists" que
 // Open ignora.
+//
+// El schema se migra progresivamente. Si una DB existente fue creada
+// con un schema anterior (sin la property "summary", por ejemplo),
+// applySchema intenta agregar la property con ALTER. Si ALTER falla
+// porque ya existe, se ignora.
 func (c *Conn) applySchema() error {
 	for _, q := range []string{
-		"CREATE NODE TABLE File(path STRING, idx INT64, PRIMARY KEY(path))",
+		"CREATE NODE TABLE File(path STRING, idx INT64, summary STRING, PRIMARY KEY(path))",
 		"CREATE REL TABLE ENLAZA(FROM File TO File)",
 	} {
 		stmt, err := c.conn.Prepare(q)
@@ -81,21 +86,41 @@ func (c *Conn) applySchema() error {
 		}
 		_, err = c.conn.Execute(stmt, nil)
 		stmt.Close()
-		if err != nil {
+		if err != nil && !isAlreadyExistsError(err) {
 			return err
 		}
 	}
+
+	// Migración de DBs existentes: agregar properties que el schema
+	// anterior no tenía. ALTER TABLE ... ADD PROPERTY es idempotente
+	// (segunda ejecución falla con "already exists", que ignoramos).
+	for _, q := range []string{
+		"ALTER TABLE File ADD summary STRING",
+	} {
+		stmt, err := c.conn.Prepare(q)
+		if err != nil {
+			return fmt.Errorf("prepare %q: %w", q, err)
+		}
+		_, err = c.conn.Execute(stmt, nil)
+		stmt.Close()
+		if err != nil && !isAlreadyExistsError(err) {
+			return fmt.Errorf("alter: %w", err)
+		}
+	}
+
 	return nil
 }
 
 // isAlreadyExistsError detecta el error "already exists" de Kuzu para
-// hacerlo idempotente.
+// hacerlo idempotente. Captura múltiples variantes del mensaje:
+//   - "already exists" (CREATE TABLE)
+//   - "already has property" (ALTER TABLE ADD)
 func isAlreadyExistsError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return contains(msg, "already exists")
+	return contains(msg, "already exists") || contains(msg, "already has property")
 }
 
 func contains(s, substr string) bool {
