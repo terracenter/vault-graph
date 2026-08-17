@@ -225,5 +225,4 @@ var enrichCmd = &cobra.Command{
 func init() {
 	enrichCmd.Flags().IntVar(&sampleSize, "sample", 0, "Número de nodos al azar a enriquecer")
 	enrichCmd.Flags().StringVar(&nodeType, "type", "", "Tipo de nodo a enriquecer (ej. Cliente, Servidor, Plan, Manual, Wiki, Diario, Nota)")
-	rootCmd.AddCommand(enrichCmd)
 }
