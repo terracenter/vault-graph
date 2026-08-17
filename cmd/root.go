@@ -15,8 +15,8 @@ var (
 // rootCmd representa el comando base
 var rootCmd = &cobra.Command{
 	Use:   "vault-graph",
-	Short: "ETL + CLI para el grafo del vault en PostgreSQL 18 + Apache AGE",
-	Long:  "Carga nodos y aristas del vault Obsidian en un grafo AGE consultable.",
+	Short: "ETL + CLI para el grafo del vault en Kuzu embebido",
+	Long:  "Carga nodos y aristas del vault Obsidian en un grafo Kuzu consultable.",
 }
 
 // Execute ejecuta el comando root
