@@ -52,28 +52,39 @@ func TestResolveWikilink_NeverNonMd(t *testing.T) {
 	fromPath := "nota_origen.md"
 
 	cases := []struct {
-		name string
-		link string
-		want string
+		name     string
+		fromPath string
+		link     string
+		want     string
 	}{
 		// Casos válidos (deben resolver).
-		{"md-en-raiz", "a", "a.md"},
-		{"md-en-subdir", "sub/b", "sub/b.md"},
-		{"index-md-en-subdir-doble", "sub/sub", "sub/sub/index.md"},
+		{"md-en-raiz", "nota_origen.md", "a", "a.md"},
+		{"md-en-subdir", "nota_origen.md", "sub/b", "sub/b.md"},
+		{"index-md-en-subdir-doble", "nota_origen.md", "sub/sub", "sub/sub/index.md"},
+
+		// Links que ya incluyen extensión .md explícita.
+		{"md-explicito-en-raiz", "nota_origen.md", "a.md", "a.md"},
+		{"md-explicito-en-subdir", "nota_origen.md", "sub/b.md", "sub/b.md"},
+		{"md-explicito-hermano-en-subdir", "sub/origen.md", "b.md", "sub/b.md"},
+		{"md-explicito-inexistente", "nota_origen.md", "fantasma_inexistente.md", ""},
 
 		// Casos trampa: el resolver NO debe aceptar estos aunque el
 		// path exista en disco.
-		{"html-en-raiz", "index", ""},                 // existe index.html, no index.md
-		{"drawio-en-raiz", "archivo", ""},             // existe archivo.drawio, no archivo.md
-		{"directorio-sin-md", "directorio_trampa", ""}, // dir existe pero no tiene .md
+		{"html-en-raiz", "nota_origen.md", "index", ""},                 // existe index.html, no index.md
+		{"drawio-en-raiz", "nota_origen.md", "archivo", ""},             // existe archivo.drawio, no archivo.md
+		{"directorio-sin-md", "nota_origen.md", "directorio_trampa", ""}, // dir existe pero no tiene .md
 
 		// Links a nombres que no existen en absoluto.
-		{"no-existe", "fantasma_inexistente", ""},
+		{"no-existe", "nota_origen.md", "fantasma_inexistente", ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := resolveWikilink(vault, fromPath, tc.link)
+			from := tc.fromPath
+			if from == "" {
+				from = fromPath
+			}
+			got := resolveWikilink(vault, from, tc.link)
 			if got != tc.want {
 				t.Fatalf("resolveWikilink(%q) = %q, want %q", tc.link, got, tc.want)
 			}

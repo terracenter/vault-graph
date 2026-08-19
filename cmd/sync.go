@@ -226,6 +226,7 @@ func extractWikilinks(path string) ([]string, error) {
 //   - El destino DEBE ser un archivo con extensión .md.
 //   - Se prueban 3 candidatos: `<link>.md`, `<dir(from)>/<link>.md`,
 //     `<dir(from)>/<link>/index.md`.
+//   - Si link ya termina en .md, se normaliza para no duplicar la extensión.
 //   - El primer candidato que exista en disco Y sea un archivo regular
 //     (no directorio) Y termine en ".md" gana.
 //   - Si ninguno cumple, retorna "" → el wikilink queda roto en el
@@ -237,10 +238,11 @@ func extractWikilinks(path string) ([]string, error) {
 // fantasma en el grafo. Si el vault quiere enlazar a recursos no-.md,
 // debe hacerlo con markdown normal, no wikilinks.
 func resolveWikilink(vaultPath, fromPath, link string) string {
+	clean := strings.TrimSuffix(link, ".md")
 	candidates := []string{
-		link + ".md",
-		filepath.Join(filepath.Dir(fromPath), link) + ".md",
-		filepath.Join(filepath.Dir(fromPath), link, "index.md"),
+		clean + ".md",
+		filepath.Join(filepath.Dir(fromPath), clean) + ".md",
+		filepath.Join(filepath.Dir(fromPath), clean, "index.md"),
 	}
 	for _, c := range candidates {
 		full := filepath.Join(vaultPath, c)
