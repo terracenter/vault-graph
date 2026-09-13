@@ -3,9 +3,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/freddytaborda/vault-graph/config"
 	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
