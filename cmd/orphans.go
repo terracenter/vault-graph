@@ -6,41 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
-	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
+	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
 )
 
-// OrphanNode es la forma uniforme de un huérfano.
-type OrphanNode struct {
-	Type   string `json:"type"`
-	Path   string `json:"path"`
-	Titulo string `json:"titulo"`
-}
-
-// orphansKuzu retorna los nodos sin aristas ENLAZA entrantes ni salientes.
-// En Kuzu todos los nodos tienen label "File" (sin distinción Manual/Plan/etc).
-func orphansKuzu(kuzuPath string) ([]OrphanNode, error) {
-	conn, err := kuzu.Open(kuzuPath)
-	if err != nil {
-		return nil, fmt.Errorf("open Kuzu: %w", err)
-	}
-	defer conn.Close()
-
-	var results []OrphanNode
-	err = conn.Query(`
-		MATCH (n:File)
-		WHERE NOT EXISTS { MATCH (n)-[]->() }
-		  AND NOT EXISTS { MATCH ()-[]->(n) }
-		RETURN n.path AS p`,
-		func(row map[string]any) bool {
-			p, _ := row["p"].(string)
-			results = append(results, OrphanNode{Type: "File", Path: p, Titulo: ""})
-			return true
-		})
-	if err != nil {
-		return nil, fmt.Errorf("query Kuzu: %w", err)
-	}
-	return results, nil
-}
 
 // orphansAGE eliminado en cleanup final. El CLI es 100% Kuzu.
 
@@ -53,18 +21,20 @@ var orphansCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		if cfg.KuzuPath == "" {
-			return fmt.Errorf("orphans requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
+		store, err := factory.NewStore(cmd.Context(), cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
 		}
+		defer store.Close()
 
-		orphans, err := orphansKuzu(cfg.KuzuPath)
+		orphans, err := store.OrphanNodes(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("failed to query orphan nodes: %w", err)
 		}
 
 		if format == "json" {
 			data := map[string]interface{}{
-				"backend": "kuzu",
+				"backend": cfg.Backend,
 				"orphans": orphans,
 			}
 			b, _ := json.MarshalIndent(data, "", "  ")
