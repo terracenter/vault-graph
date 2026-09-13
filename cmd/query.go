@@ -6,35 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
-	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
+	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
+	"github.com/spf13/cobra"
 )
-
-// queryKuzu ejecuta una query read-only contra Kuzu y retorna las filas.
-func queryKuzu(kuzuPath, cypher string) ([]map[string]any, error) {
-	conn, err := kuzu.Open(kuzuPath)
-	if err != nil {
-		return nil, fmt.Errorf("open Kuzu: %w", err)
-	}
-	defer conn.Close()
-
-	var rows []map[string]any
-	err = conn.Query(cypher, func(row map[string]any) bool {
-		cp := make(map[string]any, len(row))
-		for k, v := range row {
-			cp[k] = v
-		}
-		rows = append(rows, cp)
-		return true
-	})
-	if err != nil {
-		return nil, fmt.Errorf("query Kuzu: %w", err)
-	}
-	return rows, nil
-}
-
-// queryAGE eliminado en cleanup final. El CLI es 100% Kuzu.
 
 var queryCmd = &cobra.Command{
 	Use:   "query \"<cypher crudo>\"",
@@ -57,9 +32,11 @@ var queryCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		if cfg.KuzuPath == "" {
-			return fmt.Errorf("query requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
+		store, err := factory.NewStore(cmd.Context(), cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
 		}
+		defer store.Close()
 
 		if _, err := os.Stat(cfg.KuzuPath); err != nil {
 			return fmt.Errorf("Kuzu file not accessible: %w", err)
@@ -74,7 +51,7 @@ var queryCmd = &cobra.Command{
 			output := map[string]interface{}{
 				"query":   cypher,
 				"results": results,
-				"backend": "kuzu",
+				"backend": cfg.Backend,
 			}
 			b, _ := json.MarshalIndent(output, "", "  ")
 			fmt.Println(string(b))
