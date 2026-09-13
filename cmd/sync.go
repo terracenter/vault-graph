@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,9 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
-	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
+	"github.com/freddytaborda/vault-graph/internal/graphdb"
+	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -21,8 +23,8 @@ var (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync [--full|--since-mtime] [--prune]",
-	Short: "Carga o sincroniza el vault en el grafo Kuzu",
-	Long: `Carga el vault en el grafo Kuzu (backend único desde 2026-08-12).
+	Short: "Carga o sincroniza el vault en el grafo",
+	Long: `Carga el vault en el grafo (soporta kuzu y age).
 
 Por defecto, usa --full (re-sincroniza todos los archivos).
 
@@ -33,52 +35,39 @@ Flags:
                  vault (purga huérfanos). Útil para eliminar referencias a
                  archivos que fueron movidos o borrados del vault.
 
-Requiere KUZU_PATH en el .env o como variable de entorno.`,
+Requiere KUZU_PATH o DATABASE_URL según backend en el .env.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		if cfg.KuzuPath == "" {
-			return fmt.Errorf("sync requiere KUZU_PATH (Kuzu backend); AGE no soportado desde 2026-08-12")
+		store, err := factory.NewStore(cmd.Context(), cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
 		}
+		defer store.Close()
 
-		fmt.Printf("Backend: Kuzu (KUZU_PATH=%s)\n", cfg.KuzuPath)
-		return runSyncKuzu(cfg, prune)
+		fmt.Printf("Backend: %s\n", cfg.Backend)
+		return runSync(cmd.Context(), cfg, store, prune)
 	},
 }
 
-func runSyncKuzu(cfg *config.Config, doPrune bool) error {
+func runSync(ctx context.Context, cfg *config.Config, store graphdb.Store, doPrune bool) error {
 	paths, err := collectMarkdownFiles(cfg.VaultPath)
 	if err != nil {
 		return fmt.Errorf("collect: %w", err)
 	}
 	fmt.Printf("Found %d markdown files\n", len(paths))
 
-	// Borrar DB previa.
-	if err := os.Remove(cfg.KuzuPath); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("warning: remove %s: %v\n", cfg.KuzuPath, err)
-	}
-	if err := os.Remove(cfg.KuzuPath + ".wal"); err != nil && !os.IsNotExist(err) {
-		fmt.Printf("warning: remove %s.wal: %v\n", cfg.KuzuPath, err)
-	}
-
-	conn, err := kuzu.Open(cfg.KuzuPath)
-	if err != nil {
-		return fmt.Errorf("open Kuzu: %w", err)
-	}
-	defer conn.Close()
-
 	// Crear nodos.
 	startNodes := time.Now()
 	for _, p := range paths {
-		q := fmt.Sprintf("CREATE (n:File {path: '%s'})", escapeCypher(p))
-		if _, err := conn.Execute(q); err != nil {
+		if err := store.MergeNode(ctx, p); err != nil {
 			return fmt.Errorf("create node %s: %w", p, err)
 		}
 	}
-	fmt.Printf("Kuzu:    %d nodos en %s\n", len(paths), time.Since(startNodes))
+	fmt.Printf("Sync:    %d nodos en %s\n", len(paths), time.Since(startNodes))
 
 	// Detectar aristas.
 	edgeSet := map[string]struct{}{}
@@ -96,7 +85,7 @@ func runSyncKuzu(cfg *config.Config, doPrune bool) error {
 			edgeSet[fmt.Sprintf("%s\t%s", from, resolved)] = struct{}{}
 		}
 	}
-	fmt.Printf("Kuzu:    %d aristas detectadas\n", len(edgeSet))
+	fmt.Printf("Sync:    %d aristas detectadas\n", len(edgeSet))
 
 	// Set de paths conocidos, para crear destinos no-.md si hace falta.
 	known := make(map[string]bool, len(paths))
@@ -111,29 +100,25 @@ func runSyncKuzu(cfg *config.Config, doPrune bool) error {
 		parts := strings.SplitN(edge, "\t", 2)
 		from, to := parts[0], parts[1]
 		if !known[to] {
-			mq := fmt.Sprintf("MERGE (n:File {path: '%s'})", escapeCypher(to))
-			if _, err := conn.Execute(mq); err != nil {
+			if err := store.MergeNode(ctx, to); err != nil {
 				return fmt.Errorf("create dest node %s: %w", to, err)
 			}
 			known[to] = true
 		}
-		q := fmt.Sprintf(
-			"MATCH (a:File {path: '%s'}), (b:File {path: '%s'}) MERGE (a)-[:ENLAZA]->(b)",
-			escapeCypher(from), escapeCypher(to))
-		if _, err := conn.Execute(q); err != nil {
+		if err := store.MergeEdge(ctx, from, to); err != nil {
 			return fmt.Errorf("create edge %s->%s: %w", from, to, err)
 		}
 		written++
 	}
-	fmt.Printf("Kuzu:    %d/%d aristas en %s\n", written, len(edgeSet), time.Since(startEdges))
+	fmt.Printf("Sync:    %d/%d aristas en %s\n", written, len(edgeSet), time.Since(startEdges))
 
-	fmt.Printf("\n=== Sync Summary (kuzu) ===\n")
+	fmt.Printf("\n=== Sync Summary (%s) ===\n", cfg.Backend)
 	fmt.Printf("Nodes written: %d\n", len(paths))
 	fmt.Printf("Edges detected: %d\n", len(edgeSet))
 	fmt.Printf("Edges written: %d\n", written)
 
 	if doPrune {
-		pruned, err := pruneOrphans(conn, paths)
+		pruned, err := pruneOrphans(ctx, store, paths)
 		if err != nil {
 			return fmt.Errorf("prune: %w", err)
 		}
@@ -142,29 +127,26 @@ func runSyncKuzu(cfg *config.Config, doPrune bool) error {
 	return nil
 }
 
-func pruneOrphans(conn *kuzu.Conn, keepPaths []string) (int, error) {
+func pruneOrphans(ctx context.Context, store graphdb.Store, keepPaths []string) (int, error) {
 	keep := make(map[string]bool, len(keepPaths))
 	for _, p := range keepPaths {
 		keep[p] = true
 	}
 
 	var orphans []string
-	err := conn.Query("MATCH (n:File) RETURN n.path AS p",
-		func(row map[string]any) bool {
-			p, _ := row["p"].(string)
-			if !keep[p] {
-				orphans = append(orphans, p)
-			}
-			return true
-		})
+	allPaths, err := store.ListPaths(ctx, graphdb.PathFilter{})
 	if err != nil {
 		return 0, fmt.Errorf("list nodes: %w", err)
+	}
+	for _, p := range allPaths {
+		if !keep[p] {
+			orphans = append(orphans, p)
+		}
 	}
 
 	pruned := 0
 	for _, p := range orphans {
-		q := fmt.Sprintf("MATCH (n:File {path: '%s'}) DETACH DELETE n", escapeCypher(p))
-		if _, err := conn.Execute(q); err != nil {
+		if _, err := store.Query(ctx, fmt.Sprintf("MATCH (n:File {path: '%s'}) DETACH DELETE n", escapeCypher(p))); err != nil {
 			return pruned, fmt.Errorf("delete node %s: %w", p, err)
 		}
 		pruned++
@@ -221,22 +203,6 @@ func extractWikilinks(path string) ([]string, error) {
 }
 
 // resolveWikilink resuelve un wikilink a un path RELATIVO dentro del vault.
-//
-// Política estricta (post-2026-08-12, Kuzu-only):
-//   - El destino DEBE ser un archivo con extensión .md.
-//   - Se prueban 3 candidatos: `<link>.md`, `<dir(from)>/<link>.md`,
-//     `<dir(from)>/<link>/index.md`.
-//   - Si link ya termina en .md, se normaliza para no duplicar la extensión.
-//   - El primer candidato que exista en disco Y sea un archivo regular
-//     (no directorio) Y termine en ".md" gana.
-//   - Si ninguno cumple, retorna "" → el wikilink queda roto en el
-//     grafo (link saliente sin destino), igual que un wikilink a un
-//     .md inexistente.
-//
-// IMPORTANTE: NO se resuelven links a archivos no-.md (.html, .drawio,
-// imágenes, etc.) ni a directorios. Eso evita que el sync cree nodos
-// fantasma en el grafo. Si el vault quiere enlazar a recursos no-.md,
-// debe hacerlo con markdown normal, no wikilinks.
 func resolveWikilink(vaultPath, fromPath, link string) string {
 	clean := strings.TrimSuffix(link, ".md")
 	candidates := []string{
@@ -271,4 +237,5 @@ func init() {
 	syncCmd.Flags().BoolVar(&full, "full", true, "sincronizar desde cero (default)")
 	syncCmd.Flags().BoolVar(&sinceMtime, "since-mtime", false, "sincronizar solo archivos modificados")
 	syncCmd.Flags().BoolVar(&prune, "prune", false, "eliminar nodos cuyos paths ya no existen en el vault (purga huérfanos)")
+	rootCmd.AddCommand(syncCmd)
 }
