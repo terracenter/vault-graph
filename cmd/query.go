@@ -42,7 +42,7 @@ var queryCmd = &cobra.Command{
 			return fmt.Errorf("Kuzu file not accessible: %w", err)
 		}
 
-		results, err := queryKuzu(cfg.KuzuPath, cypher)
+		results, err := store.Query(cmd.Context(), cypher)
 		if err != nil {
 			return fmt.Errorf("failed to execute query: %w", err)
 		}
