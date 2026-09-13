@@ -12,9 +12,11 @@ import (
 // Desde 2026-08-12 el CLI es 100% Kuzu, así que solo se requieren
 // KuzuPath, OllamaURL y VaultPath. DatabaseURL se eliminó.
 type Config struct {
-	OllamaURL string
-	VaultPath string
-	KuzuPath  string
+	OllamaURL   string
+	VaultPath   string
+	KuzuPath    string
+	Backend     string
+	DatabaseURL string
 }
 
 // Load carga la configuración desde .env y variables de entorno.
@@ -22,10 +24,23 @@ func Load() (*Config, error) {
 	_ = loadDotenv(".env")
 
 	cfg := &Config{
-		OllamaURL: os.Getenv("OLLAMA_URL"),
-		VaultPath: os.Getenv("VAULT_PATH"),
-		KuzuPath:  os.Getenv("KUZU_PATH"),
+		OllamaURL:   os.Getenv("OLLAMA_URL"),
+		VaultPath:   os.Getenv("VAULT_PATH"),
+		KuzuPath:    os.Getenv("KUZU_PATH"),
+		Backend:     os.Getenv("VG_BACKEND"),
+		DatabaseURL: os.Getenv("DATABASE_URL"),
 	}
+	if cfg.Backend == "" {
+		cfg.Backend = "kuzu"
+	}
+
+	if cfg.Backend == "age" && cfg.DatabaseURL == "" {
+		return nil, fmt.Errorf("backend age requiere DATABASE_URL")
+	}
+	if cfg.Backend == "kuzu" && cfg.KuzuPath == "" {
+		return nil, fmt.Errorf("backend kuzu requiere KUZU_PATH")
+	}
+
 
 	if cfg.VaultPath == "" {
 		home, err := os.UserHomeDir()
