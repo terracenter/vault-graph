@@ -313,3 +313,54 @@ func (s *Store) BrokenLinks(ctx context.Context) ([]graphdb.BrokenLink, error) {
 	}
 	return broken, nil
 }
+
+func (s *Store) MergeNode(ctx context.Context, path string) error {
+	q := fmt.Sprintf("MERGE (n:File {path: '%s'})", escapeCypherString(path))
+	_, err := s.conn.Execute(q)
+	if err != nil {
+		return fmt.Errorf("create node %s: %w", path, err)
+	}
+	return nil
+}
+
+func (s *Store) MergeEdge(ctx context.Context, from, to string) error {
+	q := fmt.Sprintf(
+		"MATCH (a:File {path: '%s'}), (b:File {path: '%s'}) MERGE (a)-[:ENLAZA]->(b)",
+		escapeCypherString(from), escapeCypherString(to))
+	_, err := s.conn.Execute(q)
+	if err != nil {
+		return fmt.Errorf("create edge %s->%s: %w", from, to, err)
+	}
+	return nil
+}
+
+func (s *Store) ListPaths(ctx context.Context, filter graphdb.PathFilter) ([]string, error) {
+	var paths []string
+	err := s.conn.Query("MATCH (n:File) RETURN n.path AS p", func(row map[string]any) bool {
+		if p, ok := row["p"].(string); ok {
+			paths = append(paths, p)
+		}
+		return true
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list paths: %w", err)
+	}
+	return paths, nil
+}
+
+func (s *Store) UpdateSummary(ctx context.Context, path, summary string) error {
+	// Kuzu doesn't have summary property normally, but we can set it.
+	q := fmt.Sprintf("MATCH (n:File {path: '%s'}) SET n.titulo = '%s'", escapeCypherString(path), escapeCypherString(summary))
+	_, err := s.conn.Execute(q)
+	if err != nil {
+		return fmt.Errorf("update summary %s: %w", path, err)
+	}
+	return nil
+}
+
+func (s *Store) Close() error {
+	if s.conn != nil {
+		s.conn.Close()
+	}
+	return nil
+}
