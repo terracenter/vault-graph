@@ -10,7 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
-	kuzu "github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
+	"github.com/freddytaborda/vault-graph/internal/graphdb"
+	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
 	"github.com/freddytaborda/vault-graph/internal/ollama"
 )
 
@@ -18,68 +19,6 @@ var (
 	sampleSize int
 	nodeType   string
 )
-
-// enrichPathsKuzu retorna los paths de nodos a enriquecer según flags:
-// - --sample N: N paths al azar.
-// - --type T: filter por tipo. Como Kuzu perdió granularidad de label
-//   (todo es File), este flag busca en el nombre de la carpeta raíz
-//   del path (e.g. "Plan" matchea paths bajo Planes/*, "Cliente"
-//   matchea paths bajo 01_Clientes/*).
-func enrichPathsKuzu(kuzuPath, nodeType string, sampleSize int) ([]string, error) {
-	conn, err := kuzu.Open(kuzuPath)
-	if err != nil {
-		return nil, fmt.Errorf("open Kuzu: %w", err)
-	}
-	defer conn.Close()
-
-	if sampleSize > 0 {
-		// Kuzu no tiene rand() — traemos todos los paths y elegimos N al azar en Go.
-		var allPaths []string
-		err = conn.Query("MATCH (n:File) RETURN n.path AS p",
-			func(row map[string]any) bool {
-				p, _ := row["p"].(string)
-				if p != "" {
-					allPaths = append(allPaths, p)
-				}
-				return true
-			})
-		if err != nil {
-			return nil, fmt.Errorf("sample query: %w", err)
-		}
-		// Selección aleatoria uniforme sin reemplazo.
-		if sampleSize >= len(allPaths) {
-			return allPaths, nil
-		}
-		// Fisher-Yates parcial: los primeros N elementos del shuffle.
-		idx := rand.Perm(len(allPaths))
-		paths := make([]string, sampleSize)
-		for i := 0; i < sampleSize; i++ {
-			paths[i] = allPaths[idx[i]]
-		}
-		return paths, nil
-	}
-
-	// Filtro por "tipo" — convención: matchear la primera carpeta del path.
-	// "Plan" → empieza con "Planes/", "Cliente" → "01_Clientes/", etc.
-	prefix := typeToPrefix(nodeType)
-	if prefix == "" {
-		return nil, fmt.Errorf("tipo '%s' no reconocido (soportados: Plan, Manual, Wiki, Diario, Nota, Cliente, Servidor)", nodeType)
-	}
-	var paths []string
-	err = conn.Query(
-		fmt.Sprintf("MATCH (n:File) WHERE n.path STARTS WITH '%s' RETURN n.path AS p", escapeCypherString(prefix)),
-		func(row map[string]any) bool {
-			p, _ := row["p"].(string)
-			if p != "" {
-				paths = append(paths, p)
-			}
-			return true
-		})
-	if err != nil {
-		return nil, fmt.Errorf("type query: %w", err)
-	}
-	return paths, nil
-}
 
 // typeToPrefix mapea un nombre de tipo a prefijo de carpeta del vault.
 // Mantiene paridad con las labels de AGE (Manual/Plan/Wiki/etc.) usando
@@ -104,26 +43,6 @@ func typeToPrefix(t string) string {
 	return ""
 }
 
-// enrichUpdateSummaryKuzu persiste el resumen LLM al nodo.
-// Kuzu requiere MERGE/SET con property existente en schema — summary
-// se setea vía SET n.summary = ... usando MERGE para crear el campo
-// si no existe.
-func enrichUpdateSummaryKuzu(kuzuPath, nodePath, summary string) error {
-	conn, err := kuzu.Open(kuzuPath)
-	if err != nil {
-		return fmt.Errorf("open Kuzu: %w", err)
-	}
-	defer conn.Close()
-
-	q := fmt.Sprintf(
-		"MATCH (n:File {path: '%s'}) SET n.summary = '%s'",
-		escapeCypherString(nodePath), escapeCypherString(summary))
-	_, err = conn.Execute(q)
-	if err != nil {
-		return fmt.Errorf("update summary: %w", err)
-	}
-	return nil
-}
 
 var enrichCmd = &cobra.Command{
 	Use:   "enrich [--sample N | --type TYPE]",
@@ -143,9 +62,11 @@ var enrichCmd = &cobra.Command{
 			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		if cfg.KuzuPath == "" {
-			return fmt.Errorf("enrich requiere KUZU_PATH (Kuzu backend); AGE no soportado")
+		store, err := factory.NewStore(cmd.Context(), cfg)
+		if err != nil {
+			return fmt.Errorf("failed to create store: %w", err)
 		}
+		defer store.Close()
 
 		// Verificar que Ollama URL está configurado
 		if cfg.OllamaURL == "" {
@@ -162,7 +83,41 @@ var enrichCmd = &cobra.Command{
 		fmt.Println("✓ Conectado a Ollama")
 
 		// Obtener lista de paths según flags.
-		nodePaths, err := enrichPathsKuzu(cfg.KuzuPath, nodeType, sampleSize)
+		var nodePaths []string
+		if sampleSize > 0 {
+			allPaths, err := store.ListPaths(cmd.Context(), graphdb.PathFilter{})
+			if err != nil {
+				return fmt.Errorf("list paths failed: %w", err)
+			}
+			if sampleSize >= len(allPaths) {
+				nodePaths = allPaths
+			} else {
+				idx := rand.Perm(len(allPaths))
+				for i := 0; i < sampleSize; i++ {
+					nodePaths = append(nodePaths, allPaths[idx[i]])
+				}
+			}
+		} else if nodeType != "" {
+			allPaths, err := store.ListPaths(cmd.Context(), graphdb.PathFilter{})
+			if err != nil {
+				return fmt.Errorf("list paths failed: %w", err)
+			}
+			prefix := typeToPrefix(nodeType)
+			if prefix == "" {
+				return fmt.Errorf("tipo '%s' no reconocido", nodeType)
+			}
+			for _, p := range allPaths {
+				if strings.HasPrefix(p, prefix) {
+					nodePaths = append(nodePaths, p)
+				}
+			}
+		} else {
+			allPaths, err := store.ListPaths(cmd.Context(), graphdb.PathFilter{})
+			if err != nil {
+				return fmt.Errorf("list paths failed: %w", err)
+			}
+			nodePaths = allPaths
+		}
 		if err != nil {
 			return fmt.Errorf("failed to query paths: %w", err)
 		}
@@ -200,7 +155,7 @@ var enrichCmd = &cobra.Command{
 				continue
 			}
 
-			if err := enrichUpdateSummaryKuzu(cfg.KuzuPath, result.Path, result.Summary); err != nil {
+			if err := store.UpdateSummary(cmd.Context(), result.Path, result.Summary); err != nil {
 				failCount++
 				fmt.Fprintf(os.Stderr, "✗ Failed to save %s: %v\n", result.Path, err)
 				continue
