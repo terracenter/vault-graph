@@ -1,4 +1,4 @@
-package graphdb
+package age
 
 import (
 	"context"
@@ -6,13 +6,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Conn mantiene la conexión a PostgreSQL con AGE
-type Conn struct {
+// Store mantiene la conexión a PostgreSQL con AGE
+type Store struct {
 	pool *pgxpool.Pool
 }
 
-// NewConn crea una nueva conexión a PostgreSQL
-func NewConn(ctx context.Context, databaseURL string) (*Conn, error) {
+// NewStore crea un nuevo conexión a PostgreSQL
+func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create pool: %w", err)
@@ -23,19 +23,19 @@ func NewConn(ctx context.Context, databaseURL string) (*Conn, error) {
 		return nil, fmt.Errorf("failed to ping PostgreSQL: %w", err)
 	}
 
-	conn := &Conn{pool: pool}
+	store := &Store{pool: pool}
 
 	// Cargar extensión AGE y establecer search_path
-	if err := conn.setupAGE(ctx); err != nil {
+	if err := store.setupAGE(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("failed to setup AGE: %w", err)
 	}
 
-	return conn, nil
+	return store, nil
 }
 
 // setupAGE carga la extensión AGE y establece el search_path
-func (c *Conn) setupAGE(ctx context.Context) error {
+func (c *Store) setupAGE(ctx context.Context) error {
 	// LOAD 'age'
 	if _, err := c.pool.Exec(ctx, "LOAD 'age'"); err != nil {
 		return fmt.Errorf("failed to load age: %w", err)
@@ -50,13 +50,13 @@ func (c *Conn) setupAGE(ctx context.Context) error {
 }
 
 // Close cierra la conexión
-func (c *Conn) Close() {
+func (c *Store) Close() {
 	if c.pool != nil {
 		c.pool.Close()
 	}
 }
 
 // Pool retorna el pool de conexiones (para acceso directo si es necesario)
-func (c *Conn) Pool() *pgxpool.Pool {
+func (c *Store) Pool() *pgxpool.Pool {
 	return c.pool
 }

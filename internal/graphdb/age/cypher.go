@@ -1,4 +1,4 @@
-package graphdb
+package age
 
 import (
 	"context"
@@ -18,7 +18,7 @@ func escapeString(s string) string {
 }
 
 // MergeNode inserta o actualiza un nodo via MERGE
-func (c *Conn) MergeNode(ctx context.Context, tx pgx.Tx, node *model.Node) error {
+func (c *Store) MergeNode(ctx context.Context, tx pgx.Tx, node *model.Node) error {
 	// Construir Cypher con valores literales (escapados)
 	cypher := fmt.Sprintf(`
 	  MERGE (n:%s {path: '%s'})
@@ -34,7 +34,7 @@ func (c *Conn) MergeNode(ctx context.Context, tx pgx.Tx, node *model.Node) error
 }
 
 // MergeEdge inserta o actualiza una arista via MERGE
-func (c *Conn) MergeEdge(ctx context.Context, tx pgx.Tx, edge *model.Edge) error {
+func (c *Store) MergeEdge(ctx context.Context, tx pgx.Tx, edge *model.Edge) error {
 	// Construir Cypher con valores literales (escapados)
 	cypher := fmt.Sprintf(`
 	  MERGE (a {path: '%s'})
@@ -52,7 +52,7 @@ func (c *Conn) MergeEdge(ctx context.Context, tx pgx.Tx, edge *model.Edge) error
 }
 
 // UpdateNodeSummary actualiza la propiedad resumen_llm de un nodo
-func (c *Conn) UpdateNodeSummary(ctx context.Context, path, summary string) error {
+func (c *Store) UpdateNodeSummary(ctx context.Context, path, summary string) error {
 	cypher := fmt.Sprintf(`
 	  MATCH (n {path: '%s'})
 	  SET n.resumen_llm = '%s'
@@ -66,6 +66,6 @@ func (c *Conn) UpdateNodeSummary(ctx context.Context, path, summary string) erro
 }
 
 // BeginTx comienza una transacción
-func (c *Conn) BeginTx(ctx context.Context) (pgx.Tx, error) {
+func (c *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
 	return c.pool.Begin(ctx)
 }

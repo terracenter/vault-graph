@@ -1,19 +1,20 @@
-package graphdb
+package age
 
 import (
 	"context"
 	"fmt"
+
+	"github.com/freddytaborda/vault-graph/internal/graphdb"
 )
 
-// BrokenLink representa un wikilink no resuelto
-type BrokenLink struct {
-	FromPath string `json:"from_path"`
-	ToPath   string `json:"to_path"`
-	Type     string `json:"type"`
+func trimJSON(s string) string {
+	if len(s) > 0 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
 }
 
-// QueryBrokenLinks retorna todas las aristas con resuelto=false
-func (c *Conn) QueryBrokenLinks(ctx context.Context) ([]BrokenLink, error) {
+func (s *Store) BrokenLinks(ctx context.Context) ([]graphdb.BrokenLink, error) {
 	query := `
 	SELECT * FROM cypher('vault', $$
 	  MATCH (a)-[r]->(b)
@@ -22,200 +23,127 @@ func (c *Conn) QueryBrokenLinks(ctx context.Context) ([]BrokenLink, error) {
 	  ORDER BY from_path
 	$$) AS (from_path agtype, to_path agtype, rel_type agtype);
 	`
-
-	rows, err := c.pool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query broken links failed: %w", err)
 	}
 	defer rows.Close()
 
-	var links []BrokenLink
+	var links []graphdb.BrokenLink
 	for rows.Next() {
 		var fromPath, toPath, relType string
 		if err := rows.Scan(&fromPath, &toPath, &relType); err != nil {
 			return nil, fmt.Errorf("scan broken link failed: %w", err)
 		}
-
-		// Remover comillas JSON si existen
 		from := trimJSON(fromPath)
 		to := trimJSON(toPath)
 		typ := trimJSON(relType)
-
 		if from != "" && to != "" {
-			links = append(links, BrokenLink{
+			links = append(links, graphdb.BrokenLink{
 				FromPath: from,
 				ToPath:   to,
 				Type:     typ,
 			})
 		}
 	}
-
 	return links, rows.Err()
 }
 
-// trimJSON remueve comillas de un string JSON
-func trimJSON(s string) string {
-	if len(s) > 0 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// OrphanNode representa un nodo sin conexiones
-type OrphanNode struct {
-	Path   string `json:"path"`
-	Titulo string `json:"titulo"`
-	Type   string `json:"type"`
-}
-
-// QueryOrphanNodes retorna nodos sin ninguna arista entrante ni saliente (cualquier tipo)
-func (c *Conn) QueryOrphanNodes(ctx context.Context) ([]OrphanNode, error) {
+func (s *Store) OrphanNodes(ctx context.Context) ([]graphdb.OrphanNode, error) {
 	query := `
 	SELECT * FROM cypher('vault', $$
 	  MATCH (n)
-	  WHERE NOT EXISTS {
-	    MATCH (n)-[]-()
-	  } AND NOT EXISTS {
-	    MATCH ()-[]-(n)
-	  }
+	  WHERE NOT EXISTS { MATCH (n)-[]-() } AND NOT EXISTS { MATCH ()-[]-(n) }
 	  RETURN n.path AS path, n.titulo AS titulo, labels(n)[0] AS node_type
 	  ORDER BY path
 	$$) AS (path agtype, titulo agtype, node_type agtype);
 	`
-
-	rows, err := c.pool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query orphan nodes failed: %w", err)
 	}
 	defer rows.Close()
 
-	var orphans []OrphanNode
+	var orphans []graphdb.OrphanNode
 	for rows.Next() {
 		var path, nodeType string
-		var titulo *string // nullable
+		var titulo *string
 		if err := rows.Scan(&path, &titulo, &nodeType); err != nil {
 			return nil, fmt.Errorf("scan orphan node failed: %w", err)
 		}
-
 		p := trimJSON(path)
 		nt := trimJSON(nodeType)
 		t := ""
 		if titulo != nil {
 			t = trimJSON(*titulo)
 		}
-
 		if p != "" {
-			orphans = append(orphans, OrphanNode{
-				Path:   p,
-				Titulo: t,
-				Type:   nt,
-			})
+			orphans = append(orphans, graphdb.OrphanNode{Path: p, Titulo: t, Type: nt})
 		}
 	}
-
 	return orphans, rows.Err()
 }
 
-// NodeStats contiene estadísticas del grafo
-type NodeStats struct {
-	Type  string `json:"type"`
-	Count int    `json:"count"`
-}
-
-// QueryNodeStats retorna conteo de nodos por tipo
-func (c *Conn) QueryNodeStats(ctx context.Context) ([]NodeStats, error) {
-	query := `
+func (s *Store) Stats(ctx context.Context) ([]graphdb.NodeStat, []graphdb.ClientServerRelation, error) {
+	queryStats := `
 	SELECT * FROM cypher('vault', $$
 	  MATCH (n)
 	  RETURN labels(n)[0] AS node_type, count(*) AS cnt
 	  ORDER BY node_type
 	$$) AS (node_type agtype, cnt agtype);
 	`
-
-	rows, err := c.pool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, queryStats)
 	if err != nil {
-		return nil, fmt.Errorf("query node stats failed: %w", err)
+		return nil, nil, fmt.Errorf("query node stats failed: %w", err)
 	}
-	defer rows.Close()
-
-	var stats []NodeStats
+	var stats []graphdb.NodeStat
 	for rows.Next() {
 		var nodeType, cnt string
 		if err := rows.Scan(&nodeType, &cnt); err != nil {
-			return nil, fmt.Errorf("scan node stats failed: %w", err)
+			rows.Close()
+			return nil, nil, fmt.Errorf("scan node stats failed: %w", err)
 		}
-
 		nt := trimJSON(nodeType)
 		var count int
 		fmt.Sscanf(cnt, "%d", &count)
-
 		if nt != "" {
-			stats = append(stats, NodeStats{
-				Type:  nt,
-				Count: count,
-			})
+			stats = append(stats, graphdb.NodeStat{Type: nt, Count: count})
 		}
 	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
 
-	return stats, rows.Err()
-}
-
-// ClientServerRelation representa una relación Cliente-Servidor
-type ClientServerRelation struct {
-	Cliente  string `json:"cliente"`
-	Servidor string `json:"servidor"`
-	Type     string `json:"type"`
-}
-
-// QueryClientServerRelations retorna muestra de relaciones Cliente↔Servidor
-func (c *Conn) QueryClientServerRelations(ctx context.Context, limit int) ([]ClientServerRelation, error) {
-	query := fmt.Sprintf(`
+	queryRel := `
 	SELECT * FROM cypher('vault', $$
 	  MATCH (c:Cliente)-[r]-(s:Servidor)
 	  RETURN c.path AS cliente, s.path AS servidor, type(r) AS rel_type
-	  LIMIT %d
+	  LIMIT 5
 	$$) AS (cliente agtype, servidor agtype, rel_type agtype);
-	`, limit)
-
-	rows, err := c.pool.Query(ctx, query)
+	`
+	rows, err = s.pool.Query(ctx, queryRel)
 	if err != nil {
-		return nil, fmt.Errorf("query client-server relations failed: %w", err)
+		return nil, nil, fmt.Errorf("query client-server relations failed: %w", err)
 	}
 	defer rows.Close()
-
-	var relations []ClientServerRelation
+	var relations []graphdb.ClientServerRelation
 	for rows.Next() {
 		var cliente, servidor, relType string
 		if err := rows.Scan(&cliente, &servidor, &relType); err != nil {
-			return nil, fmt.Errorf("scan relation failed: %w", err)
+			return nil, nil, fmt.Errorf("scan relation failed: %w", err)
 		}
-
 		c := trimJSON(cliente)
-		s := trimJSON(servidor)
+		srv := trimJSON(servidor)
 		rt := trimJSON(relType)
-
-		if c != "" && s != "" {
-			relations = append(relations, ClientServerRelation{
-				Cliente:  c,
-				Servidor: s,
-				Type:     rt,
-			})
+		if c != "" && srv != "" {
+			relations = append(relations, graphdb.ClientServerRelation{Cliente: c, Servidor: srv, Type: rt})
 		}
 	}
-
-	return relations, rows.Err()
+	return stats, relations, rows.Err()
 }
 
-// Neighbor representa un nodo vecino
-type Neighbor struct {
-	Path string `json:"path"`
-	Type string `json:"type"`
-	Rel  string `json:"rel"`
-}
-
-// QueryNeighbors retorna vecinos hasta N hops de un nodo dado
-func (c *Conn) QueryNeighbors(ctx context.Context, path string, hops int) ([]Neighbor, error) {
-	// Para hops=1, usar relación directa. Para hops>1, usar path variable sin type()
+func (s *Store) Neighbors(ctx context.Context, path string, hops int) ([]graphdb.Neighbor, error) {
 	var query string
 	if hops == 1 {
 		query = fmt.Sprintf(`
@@ -225,7 +153,7 @@ func (c *Conn) QueryNeighbors(ctx context.Context, path string, hops int) ([]Nei
 		  RETURN DISTINCT neighbor.path AS path, labels(neighbor)[0] AS node_type, type(r) AS rel_type
 		  ORDER BY path
 		$$) AS (path agtype, node_type agtype, rel_type agtype);
-		`, path)
+		`, escapeString(path))
 	} else {
 		query = fmt.Sprintf(`
 		SELECT * FROM cypher('vault', $$
@@ -234,61 +162,38 @@ func (c *Conn) QueryNeighbors(ctx context.Context, path string, hops int) ([]Nei
 		  RETURN DISTINCT neighbor.path AS path, labels(neighbor)[0] AS node_type
 		  ORDER BY path
 		$$) AS (path agtype, node_type agtype);
-		`, path, hops)
+		`, escapeString(path), hops)
 	}
-
-	rows, err := c.pool.Query(ctx, query)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query neighbors failed: %w", err)
 	}
 	defer rows.Close()
 
-	var neighbors []Neighbor
+	var neighbors []graphdb.Neighbor
 	for rows.Next() {
 		if hops == 1 {
 			var p, nt, rt string
 			if err := rows.Scan(&p, &nt, &rt); err != nil {
 				return nil, fmt.Errorf("scan neighbor failed: %w", err)
 			}
-			path := trimJSON(p)
-			nodeType := trimJSON(nt)
-			relType := trimJSON(rt)
-			if path != "" && nodeType != "" {
-				neighbors = append(neighbors, Neighbor{
-					Path: path,
-					Type: nodeType,
-					Rel:  relType,
-				})
+			if p = trimJSON(p); p != "" {
+				neighbors = append(neighbors, graphdb.Neighbor{Path: p, Type: trimJSON(nt), Rel: trimJSON(rt)})
 			}
 		} else {
 			var p, nt string
 			if err := rows.Scan(&p, &nt); err != nil {
 				return nil, fmt.Errorf("scan neighbor failed: %w", err)
 			}
-			path := trimJSON(p)
-			nodeType := trimJSON(nt)
-			if path != "" && nodeType != "" {
-				neighbors = append(neighbors, Neighbor{
-					Path: path,
-					Type: nodeType,
-					Rel:  "multi-hop",
-				})
+			if p = trimJSON(p); p != "" {
+				neighbors = append(neighbors, graphdb.Neighbor{Path: p, Type: trimJSON(nt), Rel: "multi-hop"})
 			}
 		}
 	}
-
 	return neighbors, rows.Err()
 }
 
-// Backlink representa un enlace entrante
-type Backlink struct {
-	Path string `json:"path"`
-	Type string `json:"type"`
-	Rel  string `json:"rel"`
-}
-
-// QueryBacklinks retorna nodos que enlazan HACIA el path dado
-func (c *Conn) QueryBacklinks(ctx context.Context, path string) ([]Backlink, error) {
+func (s *Store) Backlinks(ctx context.Context, path string, hops int) ([]graphdb.Neighbor, error) {
 	query := fmt.Sprintf(`
 	SELECT * FROM cypher('vault', $$
 	  MATCH (source)-[r]->(target {path: '%s'})
@@ -296,62 +201,28 @@ func (c *Conn) QueryBacklinks(ctx context.Context, path string) ([]Backlink, err
 	  RETURN DISTINCT source.path AS path, labels(source)[0] AS node_type, type(r) AS rel_type
 	  ORDER BY path
 	$$) AS (path agtype, node_type agtype, rel_type agtype);
-	`, path)
-
-	rows, err := c.pool.Query(ctx, query)
+	`, escapeString(path))
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query backlinks failed: %w", err)
 	}
 	defer rows.Close()
 
-	var backlinks []Backlink
+	var backlinks []graphdb.Neighbor
 	for rows.Next() {
-		var path, nodeType, relType string
-		if err := rows.Scan(&path, &nodeType, &relType); err != nil {
+		var p, nt, rt string
+		if err := rows.Scan(&p, &nt, &rt); err != nil {
 			return nil, fmt.Errorf("scan backlink failed: %w", err)
 		}
-
-		p := trimJSON(path)
-		nt := trimJSON(nodeType)
-		rt := trimJSON(relType)
-
-		if p != "" && nt != "" {
-			backlinks = append(backlinks, Backlink{
-				Path: p,
-				Type: nt,
-				Rel:  rt,
-			})
+		if p = trimJSON(p); p != "" {
+			backlinks = append(backlinks, graphdb.Neighbor{Path: p, Type: trimJSON(nt), Rel: trimJSON(rt)})
 		}
 	}
-
 	return backlinks, rows.Err()
 }
 
-// PathNode representa un nodo en el camino más corto
-type PathNode struct {
-	Path string `json:"path"`
-	Type string `json:"type"`
-}
-
-// ShortestPath representa el resultado de una búsqueda de camino más corto
-type ShortestPath struct {
-	From  string     `json:"from"`
-	To    string     `json:"to"`
-	Hops  int        `json:"hops"`
-	Nodes []PathNode `json:"nodes"`
-	Found bool       `json:"found"`
-}
-
-// QueryShortestPath encuentra el camino más corto entre dos nodos (limitado a 3 hops)
-func (c *Conn) QueryShortestPath(ctx context.Context, from, to string) (ShortestPath, error) {
-	result := ShortestPath{
-		From:  from,
-		To:    to,
-		Nodes: []PathNode{},
-		Found: false,
-	}
-
-	// Query limitada a 3 hops máximo para evitar búsquedas exponenciales
+func (s *Store) ShortestPath(ctx context.Context, from, to string) (graphdb.PathResult, error) {
+	result := graphdb.PathResult{Nodes: []graphdb.PathNode{}, Found: false}
 	query := fmt.Sprintf(`
 	SELECT * FROM cypher('vault', $$
 	  MATCH p = (start {path: '%s'})-[*1..3]-(target {path: '%s'})
@@ -359,144 +230,40 @@ func (c *Conn) QueryShortestPath(ctx context.Context, from, to string) (Shortest
 	  ORDER BY hops_count
 	  LIMIT 1
 	$$) AS (hops_count agtype);
-	`, from, to)
-
-	rows, err := c.pool.Query(ctx, query)
+	`, escapeString(from), escapeString(to))
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return result, fmt.Errorf("query shortest path failed: %w", err)
 	}
 	defer rows.Close()
-
 	if rows.Next() {
 		var hopsStr string
 		if err := rows.Scan(&hopsStr); err != nil {
 			return result, fmt.Errorf("scan shortest path failed: %w", err)
 		}
-
-		// Parse hops count
 		result.Found = true
 		if hopsStr != "" {
-			hopsStr = trimJSON(hopsStr)
-			fmt.Sscanf(hopsStr, "%d", &result.Hops)
+			fmt.Sscanf(trimJSON(hopsStr), "%d", &result.Hops)
 		}
-
-		// Populate nodes array con from y to como extremos
-		result.Nodes = []PathNode{
-			{Path: from, Type: "start"},
-			{Path: to, Type: "end"},
-		}
+		result.Nodes = []graphdb.PathNode{{Path: from, Type: "start"}, {Path: to, Type: "end"}}
 	}
-
 	return result, rows.Err()
 }
 
-// QueryRaw ejecuta una query Cypher raw y retorna los resultados como mapas genéricos
-func (c *Conn) QueryRaw(ctx context.Context, cypher string) ([]map[string]interface{}, error) {
-	// Envolver el Cypher en la función cypher() de AGE
-	query := fmt.Sprintf(`
-	SELECT * FROM cypher('vault', $$
-	  %s
-	$$) AS (result agtype);
-	`, cypher)
-
-	rows, err := c.pool.Query(ctx, query)
+func (s *Store) Query(ctx context.Context, cypher string) ([]map[string]any, error) {
+	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$ %s $$) AS (result agtype);`, cypher)
+	rows, err := s.pool.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("raw query failed: %w", err)
 	}
 	defer rows.Close()
-
-	var results []map[string]interface{}
+	var results []map[string]any
 	for rows.Next() {
 		var result string
 		if err := rows.Scan(&result); err != nil {
 			return nil, fmt.Errorf("scan raw result failed: %w", err)
 		}
-
-		// Retornar el resultado como string (AGE devuelve agtype)
-		m := map[string]interface{}{"value": result}
-		results = append(results, m)
+		results = append(results, map[string]any{"value": result})
 	}
-
 	return results, rows.Err()
-}
-
-// NodePath representa un nodo simple con su path
-type NodePath struct {
-	Path string `json:"path"`
-	Type string `json:"type"`
-}
-
-// QueryNodesSample retorna una muestra al azar de N nodos
-func (c *Conn) QueryNodesSample(ctx context.Context, sampleSize int) ([]NodePath, error) {
-	query := fmt.Sprintf(`
-	SELECT * FROM cypher('vault', $$
-	  MATCH (n)
-	  RETURN n.path AS path, labels(n)[0] AS node_type
-	  ORDER BY RAND()
-	  LIMIT %d
-	$$) AS (path agtype, node_type agtype);
-	`, sampleSize)
-
-	rows, err := c.pool.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("query sample nodes failed: %w", err)
-	}
-	defer rows.Close()
-
-	var nodes []NodePath
-	for rows.Next() {
-		var path, nodeType string
-		if err := rows.Scan(&path, &nodeType); err != nil {
-			return nil, fmt.Errorf("scan sample node failed: %w", err)
-		}
-
-		p := trimJSON(path)
-		nt := trimJSON(nodeType)
-
-		if p != "" {
-			nodes = append(nodes, NodePath{
-				Path: p,
-				Type: nt,
-			})
-		}
-	}
-
-	return nodes, rows.Err()
-}
-
-// QueryNodesByType retorna todos los nodos de un tipo específico
-func (c *Conn) QueryNodesByType(ctx context.Context, nodeType string) ([]NodePath, error) {
-	query := fmt.Sprintf(`
-	SELECT * FROM cypher('vault', $$
-	  MATCH (n:%s)
-	  RETURN n.path AS path, labels(n)[0] AS node_type
-	  ORDER BY path
-	$$) AS (path agtype, node_type agtype);
-	`, nodeType)
-
-	rows, err := c.pool.Query(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("query nodes by type failed: %w", err)
-	}
-	defer rows.Close()
-
-	var nodes []NodePath
-	for rows.Next() {
-		var path, nt string
-		if err := rows.Scan(&path, &nt); err != nil {
-			return nil, fmt.Errorf("scan node by type failed: %w", err)
-		}
-
-		p := trimJSON(path)
-		ntype := trimJSON(nt)
-
-		if p != "" {
-			nodes = append(nodes, NodePath{
-				Path: p,
-				Type: ntype,
-			})
-		}
-	}
-
-	return nodes, rows.Err()
 }
