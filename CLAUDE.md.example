@@ -1,0 +1,15 @@
+# CLAUDE.md — vault-graph — Ejemplo de instrucciones para agentes
+
+Este repositorio mantiene las instrucciones canónicas del agente en el vault Obsidian asociado.
+
+Leer/importar este archivo antes de planificar, implementar, revisar, documentar o desplegar este proyecto:
+
+```text
+07.Desarrollos/<NN.Nombre-Proyecto>/CLAUDE.md
+```
+
+Reglas de este archivo local (se guarda como `CLAUDE.md.example`):
+
+- Solo puntero local cuando contiene guía interna.
+- No duplicar aquí la guía canónica.
+- Si este puntero cambia, actualizar también la copia del vault en `repo-docs/CLAUDE.md` del proyecto.

@@ -7,3 +7,6 @@ bin/
 /vault-graph
 go.sum
 /vg
+CLAUDE.md
+CLAUDE.es-VE.md
+TASK_LOG.md
