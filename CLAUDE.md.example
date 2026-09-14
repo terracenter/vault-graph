@@ -5,7 +5,7 @@ Este repositorio mantiene las instrucciones canónicas del agente en el vault Ob
 Leer/importar este archivo antes de planificar, implementar, revisar, documentar o desplegar este proyecto:
 
 ```text
-07.Desarrollos/<NN.Nombre-Proyecto>/CLAUDE.md
+07.Desarrollos/16.vault-graph/CLAUDE.md
 ```
 
 Reglas de este archivo local (se guarda como `CLAUDE.md.example`):
