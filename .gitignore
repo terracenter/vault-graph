@@ -6,3 +6,4 @@
 bin/
 /vault-graph
 go.sum
+/vg
