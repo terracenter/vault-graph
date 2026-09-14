@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
 	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
+	"github.com/spf13/cobra"
 )
 
 var statsCmd = &cobra.Command{

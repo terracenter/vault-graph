@@ -50,10 +50,11 @@ func (c *Store) setupAGE(ctx context.Context) error {
 }
 
 // Close cierra la conexión
-func (c *Store) Close() {
+func (c *Store) Close() error {
 	if c.pool != nil {
 		c.pool.Close()
 	}
+	return nil
 }
 
 // Pool retorna el pool de conexiones (para acceso directo si es necesario)

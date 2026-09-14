@@ -16,15 +16,16 @@ import (
 //   - Paths a .html, .drawio, directorios u otros → "" (wikilink roto).
 //
 // Layout del tmpdir:
-//   tmp/
-//     a.md                           ← destino .md válido
-//     sub/
-//       b.md                         ← destino .md válido (dir(from) prueba)
-//       sub/index.md                 ← destino .md válido (index.md prueba)
-//     index.html                     ← trampa: .html, NO debe resolver
-//     archivo.drawio                 ← trampa: .drawio, NO debe resolver
-//     directorio_trampa/             ← trampa: dir sin .md, NO debe resolver
-//       algo.md                      ← trampa: md adentro de dir trampa
+//
+//	tmp/
+//	  a.md                           ← destino .md válido
+//	  sub/
+//	    b.md                         ← destino .md válido (dir(from) prueba)
+//	    sub/index.md                 ← destino .md válido (index.md prueba)
+//	  index.html                     ← trampa: .html, NO debe resolver
+//	  archivo.drawio                 ← trampa: .drawio, NO debe resolver
+//	  directorio_trampa/             ← trampa: dir sin .md, NO debe resolver
+//	    algo.md                      ← trampa: md adentro de dir trampa
 func TestResolveWikilink_NeverNonMd(t *testing.T) {
 	vault := t.TempDir()
 
@@ -70,8 +71,8 @@ func TestResolveWikilink_NeverNonMd(t *testing.T) {
 
 		// Casos trampa: el resolver NO debe aceptar estos aunque el
 		// path exista en disco.
-		{"html-en-raiz", "nota_origen.md", "index", ""},                 // existe index.html, no index.md
-		{"drawio-en-raiz", "nota_origen.md", "archivo", ""},             // existe archivo.drawio, no archivo.md
+		{"html-en-raiz", "nota_origen.md", "index", ""},                  // existe index.html, no index.md
+		{"drawio-en-raiz", "nota_origen.md", "archivo", ""},              // existe archivo.drawio, no archivo.md
 		{"directorio-sin-md", "nota_origen.md", "directorio_trampa", ""}, // dir existe pero no tiene .md
 
 		// Links a nombres que no existen en absoluto.
@@ -96,10 +97,11 @@ func TestResolveWikilink_NeverNonMd(t *testing.T) {
 // candidato que existe pero es directorio se ignora aunque termine en .md.
 //
 // Esto cubre el caso del bug original:
-//   wikilink: [[Planes/ChatHub/historico_y_reportes/]]
-//   candidato: Planes/ChatHub/historico_y_reportes.md (NO existe)
-//   fallback a "sin extensión": Plans/ChatHub/historico_y_reportes (existe COMO DIR)
-//   bug: el resolver devolvía "Planes/ChatHub/historico_y_reportes/" (con /).
+//
+//	wikilink: [[Planes/ChatHub/historico_y_reportes/]]
+//	candidato: Planes/ChatHub/historico_y_reportes.md (NO existe)
+//	fallback a "sin extensión": Plans/ChatHub/historico_y_reportes (existe COMO DIR)
+//	bug: el resolver devolvía "Planes/ChatHub/historico_y_reportes/" (con /).
 //
 // Bajo la política nueva, el resolver retorna "" para este caso aunque
 // exista el path en disco, porque es directorio y/o no termina en .md.

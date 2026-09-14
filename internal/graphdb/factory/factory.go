@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/freddytaborda/vault-graph/config"
+	"github.com/freddytaborda/vault-graph/internal/graphdb"
 	"github.com/freddytaborda/vault-graph/internal/graphdb/age"
 	"github.com/freddytaborda/vault-graph/internal/graphdb/kuzu"
 )

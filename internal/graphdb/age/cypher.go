@@ -5,67 +5,81 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/freddytaborda/vault-graph/internal/model"
+	"github.com/freddytaborda/vault-graph/internal/graphdb"
 )
 
-// escapeString escapa caracteres especiales en strings para Cypher
 func escapeString(s string) string {
-	// Escapar backslashes primero, luego comillas
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "'", "\\'")
 	return s
 }
 
-// MergeNode inserta o actualiza un nodo via MERGE
-func (c *Store) MergeNode(ctx context.Context, tx pgx.Tx, node *model.Node) error {
-	// Construir Cypher con valores literales (escapados)
-	cypher := fmt.Sprintf(`
-	  MERGE (n:%s {path: '%s'})
-	  SET n.titulo = '%s', n.carpeta = '%s', n.mtime = %d, n.tipo = '%s'
-	  RETURN n
-	`, string(node.Type), escapeString(node.Path), escapeString(node.Titulo),
-		escapeString(node.Carpeta), node.MTime.Unix(), string(node.Type))
-
+func (s *Store) MergeNode(ctx context.Context, path string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	cypher := fmt.Sprintf(`MERGE (n:File {path: '%s'}) RETURN n`, escapeString(path))
 	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$%s$$) AS (n agtype);`, cypher)
-
-	_, err := tx.Exec(ctx, query)
+	_, err = tx.Exec(ctx, query)
+	if err == nil {
+		tx.Commit(ctx)
+	}
 	return err
 }
 
-// MergeEdge inserta o actualiza una arista via MERGE
-func (c *Store) MergeEdge(ctx context.Context, tx pgx.Tx, edge *model.Edge) error {
-	// Construir Cypher con valores literales (escapados)
-	cypher := fmt.Sprintf(`
-	  MERGE (a {path: '%s'})
-	  MERGE (b {path: '%s'})
-	  MERGE (a)-[r:%s]->(b)
-	  SET r.resuelto = %v
-	  RETURN r
-	`, escapeString(edge.FromPath), escapeString(edge.ToPath), edge.Type,
-		edge.Resuelto)
-
+func (s *Store) MergeEdge(ctx context.Context, from, to string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	cypher := fmt.Sprintf(`MERGE (a {path: '%s'}) MERGE (b {path: '%s'}) MERGE (a)-[r:ENLAZA]->(b) RETURN r`, escapeString(from), escapeString(to))
 	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$%s$$) AS (r agtype);`, cypher)
-
-	_, err := tx.Exec(ctx, query)
+	_, err = tx.Exec(ctx, query)
+	if err == nil {
+		tx.Commit(ctx)
+	}
 	return err
 }
 
-// UpdateNodeSummary actualiza la propiedad resumen_llm de un nodo
-func (c *Store) UpdateNodeSummary(ctx context.Context, path, summary string) error {
+func (s *Store) UpdateSummary(ctx context.Context, path, summary string) error {
 	cypher := fmt.Sprintf(`
-	  MATCH (n {path: '%s'})
+	  MATCH (n:File {path: '%s'})
 	  SET n.resumen_llm = '%s'
 	  RETURN n
 	`, escapeString(path), escapeString(summary))
-
 	query := fmt.Sprintf(`SELECT * FROM cypher('vault', $$%s$$) AS (n agtype);`, cypher)
-
-	_, err := c.pool.Exec(ctx, query)
+	_, err := s.pool.Exec(ctx, query)
 	return err
 }
 
-// BeginTx comienza una transacción
-func (c *Store) BeginTx(ctx context.Context) (pgx.Tx, error) {
-	return c.pool.Begin(ctx)
+func (s *Store) ListPaths(ctx context.Context, filter graphdb.PathFilter) ([]string, error) {
+	query := `
+	SELECT * FROM cypher('vault', $$
+	  MATCH (n:File)
+	  RETURN n.path AS path
+	$$) AS (path agtype);
+	`
+	rows, err := s.pool.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list paths failed: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		if len(path) > 0 && path[0] == '"' && path[len(path)-1] == '"' {
+			path = path[1 : len(path)-1]
+		}
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths, rows.Err()
 }

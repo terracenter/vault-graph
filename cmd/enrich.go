@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/freddytaborda/vault-graph/config"
 	"github.com/freddytaborda/vault-graph/internal/graphdb"
 	"github.com/freddytaborda/vault-graph/internal/graphdb/factory"
 	"github.com/freddytaborda/vault-graph/internal/ollama"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -42,7 +42,6 @@ func typeToPrefix(t string) string {
 	}
 	return ""
 }
-
 
 var enrichCmd = &cobra.Command{
 	Use:   "enrich [--sample N | --type TYPE]",
