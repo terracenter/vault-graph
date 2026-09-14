@@ -8,7 +8,7 @@
 ## Flujo de trabajo
 
 - Trabajar en ramas pequeñas `dev-<tarea>` cuando el proyecto use git.
-- No publicar en `master` sin aprobación explícita del maintainer.
+- No publicar en `main` sin aprobación explícita del maintainer.
 - Cada cambio debe tener validación mínima antes de reportarse como listo.
 
 ## Commits

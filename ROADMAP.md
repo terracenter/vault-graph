@@ -4,7 +4,7 @@
 
 - Estado: activo
 - Último hito: 2026-09-13 — backend dual creado en `dev-store-backend-dual`
-- Próxima acción: mergear backend dual a `master`, validar con datos reales
+- Próxima acción: mergear backend dual a `main`, validar con datos reales
 
 ## Fase 0 — Base operativa
 
