@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper del workspace para vault-graph.
+# Se instala en ~/.local/bin/vg (ver README, sección "Wrapper vg").
+#
+# Carga la configuración (~/.config/vault-graph/.env) y, con el backend Kuzu,
+# serializa las invocaciones con flock: Kuzu embebido admite un solo proceso
+# a la vez, y sin el candado cualquier `vg` lanzado mientras corre un
+# `vg sync` falla con "failed to open database with status 1".
+#
+# Variables:
+#   VAULT_GRAPH_CONFIG  ruta del .env        (default ~/.config/vault-graph/.env)
+#   VAULT_GRAPH_BIN     ruta del binario     (default ~/.local/bin/vault-graph)
+#   VG_LOCK_FILE        archivo del candado  (default ~/.cache/vault-graph/vg.lock)
+#   VG_LOCK_WAIT        segundos de espera   (default 120)
+
+CONFIG="${VAULT_GRAPH_CONFIG:-$HOME/.config/vault-graph/.env}"
+BIN="${VAULT_GRAPH_BIN:-$HOME/.local/bin/vault-graph}"
+LOCK_FILE="${VG_LOCK_FILE:-$HOME/.cache/vault-graph/vg.lock}"
+LOCK_WAIT="${VG_LOCK_WAIT:-120}"
+
+if [[ ! -x "$BIN" ]]; then
+  echo "vg: no se encontró vault-graph ejecutable en $BIN" >&2
+  exit 127
+fi
+
+ARGS=()
+if [[ -f "$CONFIG" ]]; then
+  ARGS+=(--config "$CONFIG")
+fi
+ARGS+=("$@")
+
+# Backend efectivo: el entorno manda sobre el .env; sin ninguno, kuzu.
+BACKEND="${VG_BACKEND:-}"
+if [[ -z "$BACKEND" && -f "$CONFIG" ]]; then
+  BACKEND="$(sed -n 's/^VG_BACKEND=//p' "$CONFIG" | tail -n 1 | tr -d "\"'[:space:]")"
+fi
+BACKEND="${BACKEND:-kuzu}"
+
+if [[ "$BACKEND" != "kuzu" ]]; then
+  exec "$BIN" "${ARGS[@]}"
+fi
+
+if ! command -v flock >/dev/null 2>&1; then
+  echo "vg: falta 'flock' (paquete util-linux); sin él no se puede serializar el acceso a Kuzu." >&2
+  exit 127
+fi
+
+mkdir -p "$(dirname "$LOCK_FILE")"
+exec 9>"$LOCK_FILE"
+if ! flock -w "$LOCK_WAIT" 9; then
+  echo "vg: otro proceso vg mantiene el grafo ocupado hace más de ${LOCK_WAIT}s (candado: $LOCK_FILE)." >&2
+  exit 75
+fi
+
+# El descriptor 9 lo hereda el binario: el candado se suelta cuando termina.
+exec "$BIN" "${ARGS[@]}"

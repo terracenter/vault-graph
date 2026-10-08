@@ -1,6 +1,6 @@
 # vault-graph
 
-CLI (`vg`) + backend engine that syncs an Obsidian vault into a queryable note graph. Loads nodes and edges from the vault into Kuzu embedded (default) or PostgreSQL with AGE, exposes commands for exploring neighbors, backlinks, paths, orphan notes, broken links, and full-text search.
+CLI (`vault-graph`, invoked through the `vg` wrapper) + backend engine that syncs an Obsidian vault into a queryable note graph. Loads nodes and edges from the vault into Kuzu embedded (default) or PostgreSQL with AGE, exposes commands for exploring neighbors, backlinks, paths, orphan notes, broken links, and read-only Cypher queries. It does not index note contents.
 
 ## Status
 
@@ -15,14 +15,14 @@ CLI (`vg`) + backend engine that syncs an Obsidian vault into a queryable note g
 vg sync
 
 # Explore note connections
-vg neighbors "<note-title>"
-vg backlinks "<note-title>"
+vg neighbors "<path-relative-to-vault>"
+vg backlinks "<path-relative-to-vault>"
 
 # Advanced queries
 vg path "<source>" "<target>"       # path between two notes
 vg orphans                          # notes without incoming links
 vg broken                           # notes with broken references
-vg query "search text"              # full-text search by title or content
+vg query "<cypher>"                # read-only Cypher query
 vg enrich                           # enrich graph metadata
 vg stats                            # graph statistics
 ```
@@ -41,11 +41,27 @@ Environment variables / `.env`:
 
 Global flag: `--format json|table` (default: `table`).
 
+### `vg` wrapper
+
+`scripts/vg` is the day-to-day entry point. It loads `~/.config/vault-graph/.env` and, with the
+`kuzu` backend, takes a lock (`flock`) before calling the binary: embedded Kuzu allows a single
+process at a time, and without the lock any `vg` started during a `vg sync` fails with
+`failed to open database with status 1`. With the lock, the second process waits (up to
+`VG_LOCK_WAIT` seconds, default 120; on timeout it exits with code 75).
+
+```bash
+go build -o ~/.local/bin/vault-graph .
+install -m 755 scripts/vg ~/.local/bin/vg
+scripts/test-vg-lock.sh            # tests the lock against a temporary vault
+```
+
+Anything that queries the graph must go through `vg`, not `vault-graph` directly.
+
 ## Development
 
 ```bash
 # Build
-go build -o vg .
+go build -o vault-graph .
 
 # Test
 go test ./...

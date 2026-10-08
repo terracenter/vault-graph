@@ -1,6 +1,6 @@
 # vault-graph
 
-CLI (`vg`) + motor backend que sincroniza un vault Obsidian a un grafo de notas consultable. Carga nodos y aristas del vault en Kuzu embebido (por defecto) o PostgreSQL con AGE, expone comandos para explorar vecinos, enlaces entrantes, rutas, nodos huérfanos, enlaces rotos y búsqueda de texto completo.
+CLI (`vault-graph`, invocado por el wrapper `vg`) + motor backend que sincroniza un vault Obsidian a un grafo de notas consultable. Carga nodos y aristas del vault en Kuzu embebido (por defecto) o PostgreSQL con AGE, expone comandos para explorar vecinos, enlaces entrantes, rutas, nodos huérfanos, enlaces rotos y queries Cypher de solo lectura. No indexa el contenido de las notas.
 
 ## Estado
 
@@ -15,14 +15,14 @@ CLI (`vg`) + motor backend que sincroniza un vault Obsidian a un grafo de notas 
 vg sync
 
 # Explorar conexiones de una nota
-vg neighbors "<título-de-nota>"
-vg backlinks "<título-de-nota>"
+vg neighbors "<ruta-relativa-al-vault>"
+vg backlinks "<ruta-relativa-al-vault>"
 
 # Consultas avanzadas
 vg path "<origen>" "<destino>"     # ruta entre dos notas
 vg orphans                         # notas sin enlaces entrantes
 vg broken                          # notas con referencias rotas
-vg query "buscar texto"            # búsqueda por título o contenido
+vg query "<cypher>"               # query Cypher de solo lectura
 vg enrich                          # enriquecer metadatos del grafo
 vg stats                           # estadísticas del grafo
 ```
@@ -41,11 +41,27 @@ Variables de entorno / `.env`:
 
 Flag global: `--format json|table` (default: `table`).
 
+### Wrapper `vg`
+
+`scripts/vg` es el punto de entrada de uso diario. Carga `~/.config/vault-graph/.env` y, con el
+backend `kuzu`, toma un candado (`flock`) antes de llamar al binario: Kuzu embebido admite un solo
+proceso a la vez, y sin el candado cualquier `vg` lanzado durante un `vg sync` falla con
+`failed to open database with status 1`. Con el candado, el segundo proceso espera (hasta
+`VG_LOCK_WAIT` segundos, default 120; agotada la espera sale con código 75).
+
+```bash
+go build -o ~/.local/bin/vault-graph .
+install -m 755 scripts/vg ~/.local/bin/vg
+scripts/test-vg-lock.sh            # prueba el candado contra un vault temporal
+```
+
+Todo lo que consulte el grafo debe pasar por `vg`, no por `vault-graph` directo.
+
 ## Desarrollo
 
 ```bash
 # Build
-go build -o vg .
+go build -o vault-graph .
 
 # Test
 go test ./...
