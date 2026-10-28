@@ -1,3 +1,9 @@
+# Archivos internos del agente: viven en el vault, nunca en el repo
+/CLAUDE.md
+/CLAUDE.es-VE.md
+/TASK_LOG.md
+/DEVELOPMENT_LOG.md
+
 .env
 .env.local
 *.swp
@@ -6,6 +12,3 @@
 bin/
 /vault-graph
 /vg
-CLAUDE.md
-CLAUDE.es-VE.md
-TASK_LOG.md
