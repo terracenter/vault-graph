@@ -83,3 +83,7 @@ Requisitos: Go 1.25+, Kuzu C library (para backend `kuzu`), o PostgreSQL + exten
 ## Seguridad
 
 No guardar secretos, tokens, `.env`, logs con credenciales ni bases locales en el repo.
+
+## Licencia
+
+AGPL-3.0-or-later. Ver [`LICENSE`](LICENSE).

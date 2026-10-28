@@ -8,6 +8,7 @@ El formato sigue Keep a Changelog y versionado SemVer cuando aplique.
 
 ### Added
 
+- `README.md` y `README.en.md` declaran la licencia AGPL-3.0-or-later (el `LICENSE` ya era el texto oficial).
 - Backend dual: soporte para PostgreSQL/AGE como alternativa a Kuzu embebido (`VG_BACKEND`).
 - Comandos adicionales: `stats`, `enrich`.
 

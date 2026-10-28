@@ -83,3 +83,7 @@ Requirements: Go 1.25+, Kuzu C library (for `kuzu` backend), or PostgreSQL + AGE
 ## Security
 
 Do not store secrets, tokens, `.env`, credential logs or local databases in the repository.
+
+## License
+
+AGPL-3.0-or-later. See [`LICENSE`](LICENSE).
