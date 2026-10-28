@@ -20,6 +20,10 @@ El formato sigue Keep a Changelog y versionado SemVer cuando aplique.
 
 - El backend predeterminado permanece en `kuzu` hasta que AGE sea estable en uso productivo.
 
+### Removed
+
+- `CLAUDE.md.example`: puntero de ejemplo que publicaba la ruta interna del vault. El `CLAUDE.md` real es local y está en `.gitignore`.
+
 ### Fixed
 
 - Wrapper `vg` versionado en `scripts/vg` con candado `flock`: un `vg` lanzado durante un `vg sync` ya no falla con `failed to open database with status 1`, espera su turno.
